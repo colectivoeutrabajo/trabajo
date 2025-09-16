@@ -1,13 +1,21 @@
 <script type="module">
   import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-  const supabaseUrl = 'https://kozwtpgopvxrvkbvsaeo.supabase.co'
+ const supabaseUrl = 'https://kozwtpgopvxrvkbvsaeo.supabase.co'
   const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8'
-  const supabase = createClient(supabaseUrl, supabaseKey)
+    const supabase = createClient(supabaseUrl, supabaseKey)
 
-  // Leer datos
-  const { data, error } = await supabase.from('tareas').select('*')
-  console.log(data, error)
+  async function cargarTareas() {
+    const { data, error } = await supabase.from('tareas').select('*').limit(5)
+    if (error) {
+      document.body.innerHTML += `<p style="color:red">Error: ${error.message}</p>`
+      return
+    }
+    document.body.innerHTML += '<h2>Tareas:</h2>'
+    data.forEach(t => {
+      document.body.innerHTML += `<p>${t.titulo}</p>`
+    })
+  }
+
+  cargarTareas()
 </script>
-
-hola
