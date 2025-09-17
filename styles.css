@@ -111,3 +111,5 @@ body{
   text-align:center; box-shadow: var(--shadow);
 }
 
+/* Utilidad genérica para ocultar elementos */
+.hidden{ display:none !important; }
