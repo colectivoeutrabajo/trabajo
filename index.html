@@ -1,21 +1,59 @@
-<script type="module">
-  import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>¿Cómo te sientes en el trabajo? — Grabar</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <!-- Supabase JS v2 (UMD) -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body data-page="record">
+  <main class="container">
+    <h1 class="title">¿CÓMO TE SIENTES<br>EN EL TRABAJO?</h1>
 
- const supabaseUrl = 'https://kozwtpgopvxrvkbvsaeo.supabase.co'
-  const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8'
-    const supabase = createClient(supabaseUrl, supabaseKey)
+    <div id="emojiDisplay" class="emoji">: D</div>
 
-  async function cargarTareas() {
-    const { data, error } = await supabase.from('tareas').select('*').limit(5)
-    if (error) {
-      document.body.innerHTML += `<p style="color:red">Error: ${error.message}</p>`
-      return
-    }
-    document.body.innerHTML += '<h2>Tareas:</h2>'
-    data.forEach(t => {
-      document.body.innerHTML += `<p>${t.titulo}</p>`
-    })
-  }
+    <div id="recordZone" class="record-zone">
+      <button id="recordBtn" class="btn-circle btn-record">
+        <span class="btn-icon" aria-hidden="true">
+          <!-- Mic SVG -->
+          <svg width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Mic">
+            <path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 14 0h-2zM11 19v3h2v-3h-2z"/>
+          </svg>
+        </span>
+        <span class="btn-text" id="recordBtnText">Grabar</span>
+      </button>
 
-  cargarTareas()
-</script>
+      <div id="counter" class="counter" aria-live="polite">0:00 / 0:30</div>
+    </div>
+
+    <section id="preview" class="preview hidden" aria-live="polite">
+      <h2 class="subtitle">Tu grabación:</h2>
+      <audio id="player" controls preload="metadata"></audio>
+      <div class="actions">
+        <button id="sendBtn" class="btn btn-primary">Enviar</button>
+        <button id="redoBtn" class="btn btn-ghost">Grabar de nuevo</button>
+      </div>
+    </section>
+
+    <p class="consent">Al enviar aceptas que tu audio podrá ser escuchado por otras personas.</p>
+
+    <!-- Overlay para habilitar micrófono si el navegador exige gesto del usuario -->
+    <div id="micOverlay" class="overlay hidden" role="dialog" aria-modal="true">
+      <div class="overlay-card">
+        <p>Para continuar, habilita el micrófono.</p>
+        <button id="enableMicBtn" class="btn btn-primary">Habilitar micrófono</button>
+      </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- Spinner -->
+    <div id="spinner" class="spinner hidden" aria-hidden="true"></div>
+  </main>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
