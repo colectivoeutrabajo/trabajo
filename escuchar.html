@@ -1,1 +1,34 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>¿Cómo te sientes en el trabajo? — Escuchar</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body data-page="listen">
+  <main class="container">
+    <h1 class="title">¿CÓMO TE SIENTES<br>EN EL TRABAJO?</h1>
+
+    <div class="banner">Escucha lo que otras personas respondieron</div>
+
+    <div id="loadingAudios" class="loading">Cargando audios…</div>
+    <section id="audioList" class="audio-list" aria-live="polite"></section>
+
+    <div class="more">
+      <button id="moreBtn" class="btn btn-primary">¿Quieres escuchar más audios?</button>
+    </div>
+
+    <div class="nav-back">
+      <a class="link" href="./index.html">Grabar otro audio</a>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="spinner" class="spinner hidden" aria-hidden="true"></div>
+  </main>
+
+  <script src="./app.js" defer></script>
+</body>
+</html>
 
