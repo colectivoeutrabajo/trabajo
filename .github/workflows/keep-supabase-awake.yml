@@ -1,0 +1,41 @@
+name: Keep Supabase Awake
+
+on:
+  schedule:
+    # Ejecuta diario a las 12:00 UTC (~7:00 a.m. Monterrey en verano, ~6:00 en invierno)
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}  # permite ejecutarlo manualmente
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+    steps:
+      - name: Ping REST (recordings)
+        run: |
+          set -euo pipefail
+          # Hacemos un GET muy ligero a la tabla "recordings" (1 fila) para activar DB
+          HTTP_CODE=$(curl -s -o /tmp/out.json -w "%{http_code}" \
+            "${SUPABASE_URL}/rest/v1/recordings?select=id&limit=1" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Accept: application/json" \
+            -H "Prefer: count=exact")
+          echo "HTTP_CODE=${HTTP_CODE}"
+          test "${HTTP_CODE}" -ge 200 -a "${HTTP_CODE}" -lt 400
+
+      # (Opcional) Ping a Storage: lista objetos del bucket 'audios'
+      - name: Ping Storage (list audios)
+        run: |
+          set -euo pipefail
+          HTTP_CODE=$(curl -s -o /tmp/out2.json -w "%{http_code}" \
+            "${SUPABASE_URL}/storage/v1/object/list/audios" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            --data '{"limit":1,"offset":0,"sortBy":{"column":"name","order":"asc"}}')
+          echo "HTTP_CODE=${HTTP_CODE}"
+          test "${HTTP_CODE}" -ge 200 -a "${HTTP_CODE}" -lt 400
