@@ -47,7 +47,7 @@ body{
   width:260px; height:260px; border-radius:50%;
   display:inline-flex; align-items:center; justify-content:center; flex-direction:column;
   border:6px solid var(--yellow-border);
-  background:var(--yellow); color:#FFEB00; font-weight:700; font-size:20px;
+  background:var(--yellow); color:#000; font-weight:700; font-size:20px;
   box-shadow: var(--shadow);
   cursor:pointer; user-select:none;
   /* iOS long-press UX */
