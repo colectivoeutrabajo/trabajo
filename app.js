@@ -279,4 +279,106 @@ async function initRecordPage(){
   };
   recordBtn.addEventListener('pointerup', async (e)=>{ e.preventDefault(); await endPress(); });
   recordBtn.addEventListener('pointercancel', async (e)=>{ e.preventDefault(); await endPress(); });
-  recordBtn.addEventListener('pointerleave', async (e)=>{ if (longPressActive){ await endPress(); }
+  recordBtn.addEventListener('pointerleave', async (e)=>{ if (longPressActive){ await endPress(); } });
+}
+
+/***********************
+ * ESCUCHAR
+ ***********************/
+function initListenPage(){
+  const list = $('#audioList');
+  const loading = $('#loadingAudios');
+  const moreBtn = $('#moreBtn');
+
+  const testAud = document.createElement('audio');
+
+  // Decide si un registro es reproducible en el navegador actual
+  function isPlayableRow(row){
+    const mime = (row.mime_type || '').toLowerCase();
+    const path = (row.file_path || '').toLowerCase();
+    if (isIOS()){
+      // iOS: solo mp4/aac (.m4a)
+      return mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4');
+    }
+    // Otros: aceptar m4a/mp4 si el navegador puede
+    if (mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4')){
+      const ok = testAud.canPlayType('audio/mp4') || testAud.canPlayType('audio/aac');
+      if (ok) return true;
+    }
+    // y webm/opus si puede
+    if (mime.includes('webm') || path.endsWith('.webm')){
+      const ok = testAud.canPlayType('audio/webm; codecs="opus"') || testAud.canPlayType('audio/webm');
+      if (ok) return true;
+    }
+    return false;
+  }
+
+  const publicUrl = (file_path)=>{
+    const { data } = sb.storage.from('audios').getPublicUrl(file_path);
+    return data?.publicUrl || null;
+  };
+
+  function sampleRandomUnique(arr, k, keyFn){
+    const a = [...arr];
+    for (let i=a.length-1; i>0; i--){ const j = Math.floor(Math.random()*(i+1)); [a[i], a[j]] = [a[j], a[i]]; }
+    const seen = new Set(), out = [];
+    for (const it of a){
+      const key = keyFn ? keyFn(it) : JSON.stringify(it);
+      if (!seen.has(key)){ seen.add(key); out.push(it); if (out.length >= k) break; }
+    }
+    return out;
+  }
+
+  async function fetchRecent(limit=60){
+    const { data, error } = await sb
+      .from('recordings')
+      .select('file_path,mime_type,duration_seconds,created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error){ console.error(error); showToast('Error cargando audios'); return []; }
+    return data || [];
+  }
+
+  function renderAudios(rows){
+    for (const r of rows){
+      const url = publicUrl(r.file_path);
+      if (!url) continue;
+      const wrapper = document.createElement('div');
+      wrapper.style.visibility = 'hidden'; // se muestra al estar listo
+      const aud = document.createElement('audio');
+      aud.controls = true;
+      aud.preload = 'auto';
+      aud.playsInline = true;
+      aud.src = url;
+
+      const reveal = ()=> { wrapper.style.visibility = 'visible'; };
+      aud.addEventListener('canplaythrough', reveal, { once:true });
+      setTimeout(reveal, 1200); // fallback
+
+      wrapper.appendChild(aud);
+      list.appendChild(wrapper);
+      try { aud.load(); } catch(e){}
+    }
+  }
+
+  async function loadSixReplace(){
+    loading.classList.remove('hidden');
+    list.innerHTML = ''; // REEMPLAZAR lista
+    let limit = 60, tries = 0, picked = [];
+    while (picked.length < 6 && tries < 3){
+      const batch = await fetchRecent(limit);
+      const compatibles = batch.filter(isPlayableRow);
+      picked = sampleRandomUnique(compatibles, 6, (x)=> x.file_path);
+      if (picked.length >= 6) break;
+      limit += 60; tries++;
+    }
+    if (picked.length === 0){ showToast('No hay audios compatibles aún'); }
+    renderAudios(picked);
+    loading.classList.add('hidden');
+  }
+
+  // Init
+  (async ()=>{ await loadSixReplace(); })();
+
+  moreBtn.addEventListener('click', async ()=> { await loadSixReplace(); });
+}
