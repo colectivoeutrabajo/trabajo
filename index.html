@@ -4,6 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>¿Cómo te sientes en el trabajo? — Grabar</title>
+  <!-- Fallbacks gratuitos mientras no integremos la licencia de DIN Next LT Pro -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@700;800&family=Inter:wght@700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
   <!-- Supabase JS v2 (UMD) -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -15,7 +19,7 @@
     <div id="emojiDisplay" class="emoji">: D</div>
 
     <div id="recordZone" class="record-zone">
-      <button id="recordBtn" class="btn-circle btn-record">
+      <button id="recordBtn" class="btn-circle btn-record" aria-pressed="false">
         <span class="btn-icon" aria-hidden="true">
           <!-- Mic SVG -->
           <svg width="24" height="24" viewBox="0 0 24 24" role="img" aria-label="Mic">
@@ -31,13 +35,15 @@
     <section id="preview" class="preview hidden" aria-live="polite">
       <h2 class="subtitle">Tu grabación:</h2>
       <audio id="player" controls preload="metadata" playsinline></audio>
+
+      <!-- AVISO SOLO EN PREVISUALIZACIÓN -->
+      <p class="consent">Al enviar aceptas que tu audio podrá ser escuchado por otras personas.</p>
+
       <div class="actions">
         <button id="sendBtn" class="btn btn-primary">Enviar</button>
         <button id="redoBtn" class="btn btn-ghost">Grabar de nuevo</button>
       </div>
     </section>
-
-    <p class="consent">Al enviar aceptas que tu audio podrá ser escuchado por otras personas.</p>
 
     <!-- Overlay para habilitar micrófono si el navegador exige gesto del usuario -->
     <div id="micOverlay" class="overlay hidden" role="dialog" aria-modal="true">
