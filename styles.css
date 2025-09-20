@@ -7,7 +7,8 @@
   --red: #C4003F;
   --blue: #72BF88;
   --white: #fff;
-  --shadow: 0 6px 18px rgba(0,0,0,.15);
+  --shadow: 0 10px 0 rgba(0,0,0,.15);
+  --shadow-pressed: 0 4px 0 rgba(0,0,0,.18), inset 0 3px 2px rgba(0,0,0,.15);
   --radius: 18px;
 }
 
@@ -15,7 +16,8 @@
 html,body{height:100%}
 body{
   margin:0;
-  font-family: Arial, Helvetica, sans-serif;
+  /* Intento usar DIN Next LT Pro si está instalada; si no, caemos a Archivo/Inter (gratuitas) */
+  font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, Helvetica, sans-serif;
   color:var(--text);
   background:var(--bg);
 }
@@ -26,28 +28,41 @@ body{
   text-align:center;
 }
 
+/* Título: DIN Next LT Pro Heavy ~26pt (≈ 34–36px), responsivo */
 .title{
-  font-size:28px;
-  line-height:1.2;
+  font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, sans-serif;
   font-weight:800;
+  font-size: clamp(28px, 5.2vw, 36px);
+  line-height:1.2;
   letter-spacing:.5px;
   margin:8px 0 18px;
   text-transform:uppercase;
 }
+
 .subtitle{font-size:16px; margin:14px 0 8px;}
 
+/* Emojis en blanco + disolver */
 .emoji{
   font-weight:800;
   font-size:40px;
   margin:6px 0 18px;
+  color:#fff;                 /* blanco */
+  opacity:1;
+  transition: opacity .25s ease;
 }
+.emoji.fading{ opacity:0; }
 
 .record-zone{margin:10px 0 10px;}
+
+/* Botón 3D con efecto hundido al presionar */
 .btn-circle{
   width:260px; height:260px; border-radius:50%;
   display:inline-flex; align-items:center; justify-content:center; flex-direction:column;
   border:6px solid var(--yellow-border);
-  background:var(--yellow); color:#000; font-weight:700; font-size:20px;
+  background:var(--yellow); color:#000;
+  /* Tipografía del botón: DIN Next LT Pro Bold (fallbacks) */
+  font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, sans-serif;
+  font-weight:700; font-size:20px;
   box-shadow: var(--shadow);
   cursor:pointer; user-select:none;
   /* iOS long-press UX */
@@ -55,7 +70,17 @@ body{
   -webkit-touch-callout: none;
   touch-action: manipulation;
   -webkit-tap-highlight-color: rgba(0,0,0,0);
+  /* Animación de presión */
+  transition: transform .15s cubic-bezier(.2,.8,.2,1), box-shadow .15s ease, filter .15s ease;
 }
+.btn-circle.is-pressed,
+.btn-circle:active{
+  transform: translateY(4px) scale(0.98);
+  box-shadow: var(--shadow-pressed);
+  filter: brightness(0.98);
+}
+
+/* Estado grabando (rojo) — mantiene efecto 3D si se presiona */
 .btn-record[aria-pressed="true"]{
   background:var(--red); color:var(--white);
   border-color:#b51f31;
@@ -71,7 +96,8 @@ body{
 .actions{display:flex; gap:10px; justify-content:center; flex-wrap:wrap}
 .btn{
   border:none; border-radius:10px; padding:10px 14px; font-weight:700; cursor:pointer;
-  box-shadow: var(--shadow);
+  box-shadow: 0 4px 10px rgba(0,0,0,.15);
+  font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, sans-serif;
 }
 .btn-primary{background:var(--blue); color:#fff}
 .btn-ghost{background:#efefef; color:#333}
@@ -80,7 +106,7 @@ body{
   background: var(--yellow);
   color:#000; font-weight:800; padding:12px 10px; margin:8px 0 18px;
   border-radius: var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow: 0 4px 10px rgba(0,0,0,.15);
 }
 
 .loading{color:#222; font-weight:700; margin:16px 0}
@@ -90,7 +116,7 @@ body{
 .more{margin:18px 0 8px}
 .link{color:#002b6f; text-decoration:underline}
 
-.consent{font-size:12px; color:#222; margin-top:24px}
+.consent{font-size:12px; color:#222; margin:8px 0 12px}
 
 .toast{
   position:fixed; left:50%; transform:translateX(-50%);
@@ -113,7 +139,7 @@ body{
 .overlay.hidden{display:none}
 .overlay-card{
   background:#fff; color:#222; padding:18px; border-radius:12px; max-width:320px;
-  text-align:center; box-shadow: var(--shadow);
+  text-align:center; box-shadow: 0 10px 30px rgba(0,0,0,.2);
 }
 
 /* Utilidad genérica para ocultar elementos */
