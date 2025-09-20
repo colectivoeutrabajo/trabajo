@@ -4,8 +4,10 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const MAX_SECONDS = 30;
 const MAX_BYTES = 2.5 * 1024 * 1024; // 2.5 MB
-const LONG_PRESS_MS = 250; // Umbral para long-press estilo WhatsApp
-const EMOJI_INTERVAL_MS = 1000; // Cambio cada 1s con disolver
+const LONG_PRESS_MS = 250;            // Umbral long-press estilo WhatsApp
+const EMOJI_INTERVAL_MS = 2000;       // ← ahora 2 s
+const MIN_REC_MS = 600;               // duración mínima para evitar blobs vacíos iOS
+const IGNORE_LEAVE_MS = 300;          // ignorar leave/cancel al inicio
 
 // Proveedores IP (gratis)
 const IP_PROVIDERS = ['https://ipapi.co/json/', 'https://ipwho.is/'];
@@ -82,15 +84,6 @@ function extensionFromMime(mime){
   return isIOS() ? 'm4a' : 'webm';
 }
 
-/***** PERMISOS MIC *****/
-async function isMicGranted(){
-  try{
-    if (!navigator.permissions) return null;
-    const status = await navigator.permissions.query({ name: 'microphone' });
-    return status.state === 'granted';
-  }catch(e){ return null; }
-}
-
 /***** ROUTER *****/
 document.addEventListener('DOMContentLoaded', () => {
   const page = document.body.dataset.page;
@@ -108,19 +101,15 @@ async function initRecordPage(){
   const counter = $('#counter');
   const preview = $('#preview');
   const player = $('#player');
-  const redoBtn = $('#redoBtn');
-  const sendBtn = $('#sendBtn');
-  const micOverlay = $('#micOverlay');
-  const enableMicBtn = $('#enableMicBtn');
 
-  // EMOJI: cambio cada 1s con disolver (pausado en grabación/preview)
+  // EMOJI: cada 2s con disolver (pausado en grabación/preview)
   let currentEmoji = pickEmoji();
   emojiDisplay.textContent = currentEmoji;
   let emojiTimer = null;
   const startEmojiLoop = ()=>{
     stopEmojiLoop();
     emojiTimer = setInterval(()=>{
-      emojiDisplay.classList.add('fading');  // disolver
+      emojiDisplay.classList.add('fading');
       setTimeout(()=>{
         currentEmoji = pickEmoji(currentEmoji);
         emojiDisplay.textContent = currentEmoji;
@@ -135,25 +124,7 @@ async function initRecordPage(){
   let startTs = 0, durationMs = 0, blob = null;
   let mimeType = pickSupportedMime();
   let transcript = null, speechRec = null, stopTimer = null;
-
-  // Permiso mic
-  const granted = await isMicGranted();
-  if (granted === true) {
-    try { stream = await navigator.mediaDevices.getUserMedia({audio:true}); } catch(e){}
-  } else {
-    try {
-      if (!isIOS()) stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      else micOverlay.classList.remove('hidden');
-    } catch (e) { micOverlay.classList.remove('hidden'); }
-  }
-
-  enableMicBtn?.addEventListener('click', async ()=>{
-    try{
-      if (!stream) stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      micOverlay.classList.add('hidden');
-      showToast('Micrófono habilitado');
-    }catch(e){ showToast('Permiso de micrófono rechazado'); }
-  });
+  let pressedAt = 0; // para ignorar leave/cancel al inicio
 
   function updateCounter(){
     const secs = Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
@@ -162,53 +133,83 @@ async function initRecordPage(){
   }
 
   function startSpeech(){
-    speechRec = createSpeechRecognition();
-    if(!speechRec){ transcript = null; return; }
+    const rec = createSpeechRecognition();
+    speechRec = rec;
+    if(!rec){ transcript = null; return; }
     transcript = '';
-    speechRec.onresult = (ev)=>{
+    rec.onresult = (ev)=>{
       for (let i = ev.resultIndex; i < ev.results.length; i++){
         const res = ev.results[i];
         if (res.isFinal) transcript += (transcript ? ' ' : '') + res[0].transcript.trim();
       }
     };
-    speechRec.onerror = ()=>{};
-    try { speechRec.start(); } catch(e){}
+    rec.onerror = ()=>{};
+    try { rec.start(); } catch(e){}
   }
   function stopSpeech(){ try{ speechRec && speechRec.stop(); }catch(e){} }
 
   function resetUI(){
     recordBtn.setAttribute('aria-pressed','false');
-    recordBtn.classList.remove('btn-recording','is-pressed','hidden');
+    recordBtn.classList.remove('btn-recording','is-pressed','hidden','pulsing');
     recordBtn.classList.add('btn-record');
     recordBtnText.textContent = 'Grabar';
     counter.textContent = `0:00 / 0:${MAX_SECONDS<10?'0':''}${MAX_SECONDS}`;
     preview.classList.add('hidden');
     player.removeAttribute('src'); player.load();
     blob = null; chunks = []; transcript = null; durationMs = 0;
-    // Reanudar emojis
     startEmojiLoop();
   }
   resetUI();
 
   function onDataAvailable(e){ if (e.data && e.data.size > 0) chunks.push(e.data); }
 
-  function stopRecording(){
-    if (!mediaRecorder) return;
-    try{ mediaRecorder.stop(); }catch(e){}
+  async function ensureStream(){
+    // Pedimos permiso SOLO en interacción de usuario
+    if (stream){
+      const tr = stream.getAudioTracks?.()[0];
+      if (tr && tr.readyState === 'live' && tr.enabled) return true;
+    }
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      return true;
+    }catch(e){
+      showToast('No hay permiso de micrófono');
+      return false;
+    }
+  }
+
+  function doStopNow(){
+    try{ mediaRecorder && mediaRecorder.requestData(); }catch(e){}
+    // peq. respiro para que llegue el chunk final
+    setTimeout(()=> { try{ mediaRecorder && mediaRecorder.stop(); }catch(e){} }, 0);
     if (stopTimer){ clearTimeout(stopTimer); stopTimer = null; }
     stopSpeech();
     durationMs = Date.now() - startTs;
   }
 
-  async function startRecordingIfNeeded(){
-    if (!stream){
-      try{ stream = await navigator.mediaDevices.getUserMedia({audio:true}); }
-      catch(e){ showToast('No hay permiso de micrófono'); micOverlay.classList.remove('hidden'); return false; }
+  function stopRecording(){
+    if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+    const elapsed = Date.now() - startTs;
+    if (elapsed < MIN_REC_MS){
+      setTimeout(()=> doStopNow(), MIN_REC_MS - elapsed);
+    } else {
+      doStopNow();
     }
+  }
+
+  async function startRecordingIfNeeded(){
+    const ok = await ensureStream();
+    if (!ok) return false;
     if (mediaRecorder && mediaRecorder.state === 'recording') return true;
 
     chunks = []; blob = null;
-    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    try{
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+    }catch(e){
+      // fallback sin mimeType
+      mediaRecorder = new MediaRecorder(stream);
+      mimeType = mediaRecorder.mimeType || mimeType;
+    }
     mediaRecorder.ondataavailable = onDataAvailable;
     mediaRecorder.onstop = ()=>{
       blob = new Blob(chunks, { type: mimeType });
@@ -224,17 +225,20 @@ async function initRecordPage(){
         recordBtn.classList.add('hidden'); recordBtn.style.display = 'none';
         stopEmojiLoop();
         recordBtn.setAttribute('aria-pressed','false');
+        recordBtn.classList.remove('pulsing');
         recordBtnText.textContent = 'Grabar';
       };
       player.addEventListener('canplaythrough', onReady, { once:true });
       setTimeout(()=> { if (preview.classList.contains('hidden')) onReady(); }, 800);
     };
-    mediaRecorder.start();
+
+    // Iniciar con timeslice para garantizar chunks
+    mediaRecorder.start(250);
     startTs = Date.now();
+    pressedAt = startTs;
     recordBtn.setAttribute('aria-pressed','true');
-    recordBtn.classList.add('btn-recording');
+    recordBtn.classList.add('btn-recording','pulsing');  // pulso de grabación
     recordBtnText.textContent = 'Grabando…';
-    // Pausar emojis durante grabación
     stopEmojiLoop();
     startSpeech();
 
@@ -275,11 +279,11 @@ async function initRecordPage(){
   let pressTimer = null, pressStartedAt = 0, longPressActive = false;
   function clearPressTimer(){ if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; } }
 
-  recordBtn.addEventListener('contextmenu', (e)=> e.preventDefault()); // evitar menú iOS
+  recordBtn.addEventListener('contextmenu', (e)=> e.preventDefault());
   recordBtn.addEventListener('pointerdown', async (e)=>{
     e.preventDefault();
     try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
-    recordBtn.classList.add('is-pressed');  // efecto 3D
+    recordBtn.classList.add('is-pressed');
     longPressActive = false;
     pressStartedAt = Date.now();
     clearPressTimer();
@@ -289,11 +293,14 @@ async function initRecordPage(){
       // mantiene el hundido mientras esté presionado
     }, LONG_PRESS_MS);
   });
-  const endPress = async ()=>{
+  const endPress = async (type='up')=>{
     const delta = Date.now() - pressStartedAt;
     clearPressTimer();
-    recordBtn.classList.remove('is-pressed'); // liberar efecto 3D
+    recordBtn.classList.remove('is-pressed');
+
     if (longPressActive){
+      // si acaba de empezar, ignorar leaves/cancels muy tempranos
+      if ((Date.now() - pressedAt) < IGNORE_LEAVE_MS && (type==='leave'||type==='cancel')) return;
       if (mediaRecorder?.state === 'recording') stopRecording();
       longPressActive = false;
     } else {
@@ -303,9 +310,9 @@ async function initRecordPage(){
       }
     }
   };
-  recordBtn.addEventListener('pointerup', async (e)=>{ e.preventDefault(); await endPress(); });
-  recordBtn.addEventListener('pointercancel', async (e)=>{ e.preventDefault(); await endPress(); });
-  recordBtn.addEventListener('pointerleave', async (e)=>{ if (longPressActive){ await endPress(); } });
+  recordBtn.addEventListener('pointerup', async (e)=>{ e.preventDefault(); await endPress('up'); });
+  recordBtn.addEventListener('pointercancel', async (e)=>{ e.preventDefault(); await endPress('cancel'); });
+  recordBtn.addEventListener('pointerleave', async (e)=>{ e.preventDefault(); await endPress('leave'); });
 }
 
 /***********************
@@ -318,20 +325,16 @@ function initListenPage(){
 
   const testAud = document.createElement('audio');
 
-  // Decide si un registro es reproducible en el navegador actual
   function isPlayableRow(row){
     const mime = (row.mime_type || '').toLowerCase();
     const path = (row.file_path || '').toLowerCase();
     if (isIOS()){
-      // iOS: solo mp4/aac (.m4a)
       return mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4');
     }
-    // Otros: aceptar m4a/mp4 si el navegador puede
     if (mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4')){
       const ok = testAud.canPlayType('audio/mp4') || testAud.canPlayType('audio/aac');
       if (ok) return true;
     }
-    // y webm/opus si puede
     if (mime.includes('webm') || path.endsWith('.webm')){
       const ok = testAud.canPlayType('audio/webm; codecs="opus"') || testAud.canPlayType('audio/webm');
       if (ok) return true;
@@ -370,7 +373,7 @@ function initListenPage(){
       const url = publicUrl(r.file_path);
       if (!url) continue;
       const wrapper = document.createElement('div');
-      wrapper.style.visibility = 'hidden'; // se muestra al estar listo
+      wrapper.style.visibility = 'hidden';
       const aud = document.createElement('audio');
       aud.controls = true;
       aud.preload = 'auto';
@@ -389,7 +392,7 @@ function initListenPage(){
 
   async function loadSixReplace(){
     loading.classList.remove('hidden');
-    list.innerHTML = ''; // REEMPLAZAR lista
+    list.innerHTML = '';
     let limit = 60, tries = 0, picked = [];
     while (picked.length < 6 && tries < 3){
       const batch = await fetchRecent(limit);
@@ -403,7 +406,6 @@ function initListenPage(){
     loading.classList.add('hidden');
   }
 
-  // Init
   (async ()=>{ await loadSixReplace(); })();
 
   moreBtn.addEventListener('click', async ()=> { await loadSixReplace(); });
