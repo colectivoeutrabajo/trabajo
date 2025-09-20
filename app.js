@@ -5,6 +5,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const MAX_SECONDS = 30;
 const MAX_BYTES = 2.5 * 1024 * 1024; // 2.5 MB
 const LONG_PRESS_MS = 250; // Umbral para long-press estilo WhatsApp
+const EMOJI_INTERVAL_MS = 1000; // Cambio cada 1s con disolver
 
 // Proveedores IP (gratis)
 const IP_PROVIDERS = ['https://ipapi.co/json/', 'https://ipwho.is/'];
@@ -26,7 +27,11 @@ const showSpinner = (on=true) => {
 
 /***** EMOJIS *****/
 const EMOJIS = [': D', ': )', ': |', ': (', ":’(", ': S'];
-const pickEmoji = () => EMOJIS[Math.floor(Math.random()*EMOJIS.length)];
+const pickEmoji = (prev=null) => {
+  let e = EMOJIS[Math.floor(Math.random()*EMOJIS.length)];
+  if (prev && e === prev) e = EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length];
+  return e;
+};
 
 /***** PLATAFORMA *****/
 function isIOS(){ return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream; }
@@ -108,10 +113,23 @@ async function initRecordPage(){
   const micOverlay = $('#micOverlay');
   const enableMicBtn = $('#enableMicBtn');
 
-  emojiDisplay.textContent = pickEmoji();
-  let emojiTimer = setInterval(()=> { emojiDisplay.textContent = pickEmoji(); }, 4000);
-  const pauseEmoji = ()=> { if (emojiTimer){ clearInterval(emojiTimer); emojiTimer=null; } };
-  const resumeEmoji = ()=> { if (!emojiTimer){ emojiTimer = setInterval(()=> { emojiDisplay.textContent = pickEmoji(); }, 4000); } };
+  // EMOJI: cambio cada 1s con disolver (pausado en grabación/preview)
+  let currentEmoji = pickEmoji();
+  emojiDisplay.textContent = currentEmoji;
+  let emojiTimer = null;
+  const startEmojiLoop = ()=>{
+    stopEmojiLoop();
+    emojiTimer = setInterval(()=>{
+      emojiDisplay.classList.add('fading');  // disolver
+      setTimeout(()=>{
+        currentEmoji = pickEmoji(currentEmoji);
+        emojiDisplay.textContent = currentEmoji;
+        emojiDisplay.classList.remove('fading');
+      }, 150);
+    }, EMOJI_INTERVAL_MS);
+  };
+  const stopEmojiLoop = ()=>{ if (emojiTimer){ clearInterval(emojiTimer); emojiTimer = null; } };
+  startEmojiLoop();
 
   let stream = null, mediaRecorder = null, chunks = [];
   let startTs = 0, durationMs = 0, blob = null;
@@ -160,15 +178,15 @@ async function initRecordPage(){
 
   function resetUI(){
     recordBtn.setAttribute('aria-pressed','false');
-    recordBtn.classList.remove('btn-recording');
+    recordBtn.classList.remove('btn-recording','is-pressed','hidden');
     recordBtn.classList.add('btn-record');
     recordBtnText.textContent = 'Grabar';
     counter.textContent = `0:00 / 0:${MAX_SECONDS<10?'0':''}${MAX_SECONDS}`;
     preview.classList.add('hidden');
     player.removeAttribute('src'); player.load();
     blob = null; chunks = []; transcript = null; durationMs = 0;
-    recordBtn.classList.remove('hidden'); recordBtn.style.display = '';
-    resumeEmoji();
+    // Reanudar emojis
+    startEmojiLoop();
   }
   resetUI();
 
@@ -202,7 +220,9 @@ async function initRecordPage(){
       const onReady = () => {
         player.removeEventListener('canplaythrough', onReady);
         preview.classList.remove('hidden');
+        // Ocultar botón y pausar emojis en preview
         recordBtn.classList.add('hidden'); recordBtn.style.display = 'none';
+        stopEmojiLoop();
         recordBtn.setAttribute('aria-pressed','false');
         recordBtnText.textContent = 'Grabar';
       };
@@ -214,16 +234,20 @@ async function initRecordPage(){
     recordBtn.setAttribute('aria-pressed','true');
     recordBtn.classList.add('btn-recording');
     recordBtnText.textContent = 'Grabando…';
-    pauseEmoji(); startSpeech();
+    // Pausar emojis durante grabación
+    stopEmojiLoop();
+    startSpeech();
 
     const int = setInterval(()=>{ if (mediaRecorder?.state !== 'recording') { clearInterval(int); return; } updateCounter(); }, 200);
     stopTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
     return true;
   }
 
-  redoBtn.addEventListener('click', ()=>{ resetUI(); });
+  // Reintentar
+  $('#redoBtn')?.addEventListener('click', ()=>{ recordBtn.style.display=''; resetUI(); });
 
-  sendBtn.addEventListener('click', async ()=>{
+  // Enviar
+  $('#sendBtn')?.addEventListener('click', async ()=>{
     if (!blob){ showToast('No hay audio para enviar'); return; }
     showSpinner(true);
     try{
@@ -242,13 +266,12 @@ async function initRecordPage(){
       }]);
       if (insErr) throw insErr;
       showToast('¡Enviado con éxito!');
-      resumeEmoji();
       setTimeout(()=> { window.location.href = './escuchar.html'; }, 600);
     }catch(e){ console.error(e); showToast('Error al enviar. Reintenta.'); }
     finally{ showSpinner(false); }
   });
 
-  /***** BOTÓN: tap y long-press *****/
+  /***** BOTÓN: tap y long-press + efecto 3D *****/
   let pressTimer = null, pressStartedAt = 0, longPressActive = false;
   function clearPressTimer(){ if (pressTimer){ clearTimeout(pressTimer); pressTimer = null; } }
 
@@ -256,17 +279,20 @@ async function initRecordPage(){
   recordBtn.addEventListener('pointerdown', async (e)=>{
     e.preventDefault();
     try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
+    recordBtn.classList.add('is-pressed');  // efecto 3D
     longPressActive = false;
     pressStartedAt = Date.now();
     clearPressTimer();
     pressTimer = setTimeout(async ()=>{
       longPressActive = true;
       await startRecordingIfNeeded();
+      // mantiene el hundido mientras esté presionado
     }, LONG_PRESS_MS);
   });
   const endPress = async ()=>{
     const delta = Date.now() - pressStartedAt;
     clearPressTimer();
+    recordBtn.classList.remove('is-pressed'); // liberar efecto 3D
     if (longPressActive){
       if (mediaRecorder?.state === 'recording') stopRecording();
       longPressActive = false;
