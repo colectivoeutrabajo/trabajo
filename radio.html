@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es" data-page="radio">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Radio Trabajo</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      /* Estilos ligeros para la radio (reusa tu paleta) */
+      body { background: #0e7a63; color: #fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+      .radio-wrap { max-width: 680px; margin: 6vh auto; padding: 24px; text-align: center; }
+      .title { font-size: clamp(22px, 4vw, 32px); font-weight: 800; margin-bottom: 12px; }
+      .subtitle { font-size: clamp(14px, 2.2vw, 16px); opacity: .9; margin-bottom: 24px; }
+      .controls { display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap; }
+      .btn { cursor: pointer; border: 0; border-radius: 999px; padding: 14px 22px; font-weight: 800; line-height: 1; }
+      .btn-play { background: #ffd33d; color: #3a3300; box-shadow: 0 6px 0 #caa700; }
+      .btn-play:active { transform: translateY(2px); box-shadow: 0 4px 0 #caa700; }
+      .btn-skip { background: #4FC3F7; color: #072a36; box-shadow: 0 6px 0 #2c9ec8; }
+      .btn-skip:active { transform: translateY(2px); box-shadow: 0 4px 0 #2c9ec8; }
+      .status { margin-top: 18px; font-size: 14px; opacity: .95; min-height: 1.2em; }
+      .meta { margin-top: 8px; font-size: 13px; opacity: .85; }
+      .pill { display: inline-block; background: rgba(255,255,255,.15); border-radius: 999px; padding: 4px 10px; margin: 0 6px; }
+      .hint { margin-top: 20px; font-size: 12px; opacity: .8; }
+      audio { width: 100%; margin-top: 18px; background: rgba(0,0,0,.25); border-radius: 12px; }
+    </style>
+    <!-- Supabase JS (CDN) -->
+    <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <!-- Lógica de la radio -->
+    <script defer src="./radio.js"></script>
+  </head>
+  <body>
+    <div class="radio-wrap">
+      <div class="title">Radio Trabajo</div>
+      <div class="subtitle">Reproduce audios al azar, sin parar, por horas.</div>
+
+      <div class="controls">
+        <button id="playBtn" class="btn btn-play" aria-pressed="false">▶︎ Play</button>
+        <button id="skipBtn" class="btn btn-skip" disabled>⏭︎ Skip</button>
+      </div>
+
+      <div class="status" id="status">Listo.</div>
+      <div class="meta">
+        <span class="pill" id="queueInfo">Cola: 0</span>
+        <span class="pill" id="playedInfo">Reproducidos: 0</span>
+        <span class="pill" id="preloadInfo">Precargados: 0</span>
+      </div>
+
+      <!-- Player visible (útil para controlar volumen en la sala) -->
+      <audio id="radioAudio" preload="metadata" controls playsinline></audio>
+
+      <div class="hint">Consejo: deja esta ventana en primer plano. Intentaremos mantener la pantalla encendida.</div>
+    </div>
+  </body>
+</html>
