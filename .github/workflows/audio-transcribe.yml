@@ -37,7 +37,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential git curl ca-certificates
 
-      # Cache solo del modelo para acelerar corridas
+      # Cache del modelo para acelerar corridas
       - name: Cache whisper model
         id: cache-whisper-model
         uses: actions/cache@v4
@@ -45,13 +45,12 @@ jobs:
           path: whisper.cpp/models/ggml-small.bin
           key: whisper-model-small-v1
 
-      - name: Clone & build whisper.cpp (robusto con rescate de cachés)
+      - name: Clone & build whisper.cpp (preferir whisper-cli)
         run: |
           set -euxo pipefail
 
-          # Si existe directorio pero NO hay CMakeLists.txt, es un caso de caché "huérfano"
+          # Reclonar si quedó un dir sin fuentes (cache huérfano)
           if [ -d whisper.cpp ] && [ ! -f whisper.cpp/CMakeLists.txt ]; then
-            echo "Directorio whisper.cpp existe sin fuentes; lo reclono…"
             rm -rf whisper.cpp
           fi
 
@@ -77,30 +76,28 @@ jobs:
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release -j2
 
-          # Detectar binario: build/bin/{main|whisper-cli}
-          if [ -f build/bin/main ]; then
-            echo "WHISPER_BIN=./whisper.cpp/build/bin/main" >> $GITHUB_ENV
-          elif [ -f build/bin/whisper-cli ]; then
+          # Preferir whisper-cli; si no, usar main como fallback
+          if [ -f build/bin/whisper-cli ]; then
             echo "WHISPER_BIN=./whisper.cpp/build/bin/whisper-cli" >> $GITHUB_ENV
+          elif [ -f build/bin/main ]; then
+            echo "WHISPER_BIN=./whisper.cpp/build/bin/main" >> $GITHUB_ENV
           else
-            echo "No se encontró binario en build/bin. Listado de build:"
+            echo "No se encontró ni whisper-cli ni main en build/bin:"
             ls -R build || true
             exit 1
           fi
 
-          # Exportar LD_LIBRARY_PATH para que encuentre .so en build y build/bin
+          # Exportar LD_LIBRARY_PATH para que encuentre las .so
           echo "LD_LIBRARY_PATH=./whisper.cpp/build:./whisper.cpp/build/bin" >> $GITHUB_ENV
           echo "WHISPER_MODEL=./whisper.cpp/models/ggml-small.bin" >> $GITHUB_ENV
-
-          # Probar ayuda
-          ${GITHUB_ENV+echo "Vars defined"} || true
+          cd ..
 
       - name: Confirm whisper bin & model
         run: |
           echo "WHISPER_BIN=${WHISPER_BIN}"
           echo "WHISPER_MODEL=${WHISPER_MODEL}"
           ls -lh "${WHISPER_BIN}" "${WHISPER_MODEL}"
-          "${WHISPER_BIN}" -h | head -n 10 || true
+          "${WHISPER_BIN}" -h | head -n 20 || true
 
       - name: Install Node deps (repo)
         run: |
