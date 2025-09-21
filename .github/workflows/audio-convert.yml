@@ -1,0 +1,38 @@
+name: Convert audio to M4A (replace originals)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 * * * *"   # cada hora (ajusta si quieres)
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run conversion
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: audios
+          SUPABASE_TABLE: recordings
+          BATCH_LIMIT: "30"          # procesa hasta 30 por corrida
+          APPROVED_ONLY: "true"      # solo los approved (cámbialo a false si quieres todo)
+          DRY_RUN: "false"           # ponlo "true" para probar sin tocar nada
+          BITRATE: "64k"             # 64k ahorra cuota; puedes usar 96k o 128k
+        run: npm run convert
