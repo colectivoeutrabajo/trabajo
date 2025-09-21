@@ -181,7 +181,7 @@ async function run() {
       console.log(`   Subiendo ${newPath} (${Math.round(buf.length/1024)} KB)`);
       if (DRY_RUN.toLowerCase() !== 'true') {
         await uploadBuffer(newPath, buf);
-
+ 
         // 5) Actualizar fila (señalar nuevo path/mime/size/duración)
         await updateRow(row.id, oldPath, {
           file_path: newPath,
