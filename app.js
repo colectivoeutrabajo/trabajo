@@ -1,32 +1,31 @@
-/***** CONFIGURACIÓN *****/
+/***** CONFIG *****/
 const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
 
 const MAX_SECONDS = 30;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 650; // evita taps ultracortos
+const MIN_REC_MS = 650; // duración mínima para evitar blobs vacíos
 
-/***** DETECCIÓN *****/
-const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+/***** Plataforma y timings *****/
+const isiOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+// Colita al soltar (pequeña en iOS para no cortar final, pequeña también en desktop/Android)
+const TAIL_PAD_MS        = isiOS() ? 350 : 150;
+const STOP_FLUSH_WAIT_MS = isiOS() ? 300 : 150;
+const FORCE_NEW_STREAM_EVERY_TIME = true; // stream fresco siempre (no vuelve a pedir permiso si ya está concedido)
 
-// Timings por plataforma
-const TAIL_PAD_MS        = isIOS() ? 1200 : 300; // cola antes de stop (iOS más larga)
-const STOP_FLUSH_WAIT_MS = isIOS() ? 300  : 180; // espera para último chunk tras stop
-const FORCE_NEW_STREAM_EVERY_TIME = true;       // stream fresco por intento
-
-/***** SUPABASE *****/
+/***** Supabase *****/
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/***** HELPERS UI *****/
+/***** Helpers UI *****/
 const $ = (s)=>document.querySelector(s);
 const showToast = (m)=>{ const t=$('#toast'); if(!t) return; t.textContent=m; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600); };
 const showSpinner = (on=true)=>{ const s=$('#spinner'); if(!s) return; s.classList.toggle('hidden',!on); };
 
-/***** EMOJIS *****/
+/***** Emojis *****/
 const EMOJIS=[": D",": )",": |",": (",":’(",": S"];
 const pickEmoji=(prev=null)=>{ let e=EMOJIS[Math.floor(Math.random()*EMOJIS.length)]; if(prev&&e===prev) e=EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length]; return e; };
 
-/***** GEO IP *****/
+/***** Geo IP *****/
 async function getGeoByIP(){
   const providers=['https://ipapi.co/json/','https://ipwho.is/'];
   for(const url of providers){
@@ -42,24 +41,24 @@ async function getGeoByIP(){
 
 /***** MIME/EXT *****/
 function pickSupportedMime(){
-  const prefs = isIOS()
+  const prefs = isiOS()
     ? ['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus']
     : ['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg;codecs=opus'];
   for(const t of prefs){ if(window.MediaRecorder?.isTypeSupported?.(t)) return t; }
-  return isIOS()? 'audio/mp4' : 'audio/webm';
+  return isiOS()? 'audio/mp4' : 'audio/webm';
 }
 function extensionFromMime(m){
-  if(!m) return isIOS()?'m4a':'webm';
+  if(!m) return isiOS()?'m4a':'webm';
   if(m.includes('mp4'))  return 'm4a';
   if(m.includes('webm')) return 'webm';
   if(m.includes('m4a'))  return 'm4a';
   if(m.includes('mpeg')) return 'mp3';
   if(m.includes('ogg'))  return 'ogg';
   if(m.includes('wav'))  return 'wav';
-  return isIOS()? 'm4a' : 'webm';
+  return isiOS()? 'm4a' : 'webm';
 }
 
-/***** ROUTER *****/
+/***** Router *****/
 document.addEventListener('DOMContentLoaded',()=>{
   const page=document.body.dataset.page;
   if(page==='record') initRecordPage();
@@ -67,7 +66,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 /***********************
- * GRABAR (TOGGLE SIMPLE + iOS single-blob)
+ * GRABAR — HOLD-TO-RECORD
  ***********************/
 async function initRecordPage(){
   const emojiDisplay=$('#emojiDisplay');
@@ -77,7 +76,7 @@ async function initRecordPage(){
   const preview=$('#preview');
   const player=$('#player');
 
-  // Emojis
+  // Emojis c/2s con disolver (pausados al grabar)
   let currentEmoji=pickEmoji(); emojiDisplay.textContent=currentEmoji;
   let emojiTimer=null;
   const startEmojiLoop=()=>{ stopEmojiLoop(); emojiTimer=setInterval(()=>{ emojiDisplay.classList.add('fading'); setTimeout(()=>{ currentEmoji=pickEmoji(currentEmoji); emojiDisplay.textContent=currentEmoji; emojiDisplay.classList.remove('fading'); },150); },EMOJI_INTERVAL_MS); };
@@ -87,8 +86,9 @@ async function initRecordPage(){
   // Estado
   let stream=null, mediaRecorder=null, chunks=[];
   let startTs=0, durationMs=0, blob=null, mimeType=pickSupportedMime();
-  let speechRec=null, stopTimer=null, counterInt=null;
+  let stopTimer=null, counterInt=null;
   let state='idle'; // idle | starting | recording | stopping | preview
+  const HOLD_MIN_MS = 120; // umbral para considerar que sí quiso mantener
 
   const updateCounter=()=>{ if(state!=='recording') return;
     const secs=Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
@@ -99,7 +99,7 @@ async function initRecordPage(){
   function resetUI(){
     state='idle';
     recordBtn.setAttribute('aria-pressed','false');
-    recordBtn.classList.remove('btn-recording','hidden');
+    recordBtn.classList.remove('btn-recording','hidden','is-pressed');
     recordBtnText.textContent='Grabar';
     counter.textContent=`0:00 / 0:${MAX_SECONDS<10?'0':''}${MAX_SECONDS}`;
     preview.classList.add('hidden');
@@ -113,78 +113,68 @@ async function initRecordPage(){
   function releaseStream(){ try{ stream?.getTracks?.().forEach(t=>{ try{ t.stop(); }catch(_){ } }); }catch(_){ } stream=null; }
   async function acquireStreamFresh(){ try{ return await navigator.mediaDevices.getUserMedia({audio:true}); }catch(_){ showToast('No hay permiso de micrófono'); return null; } }
 
-  function startSpeech(){
-    if (isIOS()) return; // evitamos prompt extra
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
-    const rec=new SR(); rec.lang='es-MX'; rec.interimResults=true; rec.continuous=true;
-    rec.onerror=()=>{}; try{ rec.start(); speechRec=rec; }catch(_){}
-  }
-  function stopSpeech(){ try{ speechRec&&speechRec.stop(); }catch(_){} speechRec=null; }
-
   async function startRecording(){
     if(state!=='idle' && state!=='preview') return false;
     state='starting';
 
-    // stream fresco (si ya concedido, no vuelve a pedir)
-    releaseStream();
-    stream=await acquireStreamFresh();
-    if(!stream){ state='idle'; return false; }
+    // Stream fresco (no re-pide permiso si ya está concedido)
+    if (FORCE_NEW_STREAM_EVERY_TIME){ releaseStream(); }
+    if(!stream){
+      stream=await acquireStreamFresh();
+      if(!stream){ state='idle'; return false; }
+    }
 
     chunks=[]; blob=null;
 
-    // MediaRecorder
+    // MediaRecorder: iOS single-blob; otros timeslice
     try{ mediaRecorder=new MediaRecorder(stream,{mimeType}); }
     catch(_){ mediaRecorder=new MediaRecorder(stream); mimeType=mediaRecorder.mimeType||mimeType; }
 
     let gotAny=false;
     mediaRecorder.addEventListener('dataavailable',(e)=>{ if(e.data && e.data.size>0){ gotAny=true; chunks.push(e.data); } });
 
-    // iOS: single-blob (sin timeslice, sin requestData); Otros: timeslice 250ms
-    if (isIOS()){
-      mediaRecorder.start(); // un solo chunk al detener
+    if (isiOS()){
+      mediaRecorder.start();         // un solo chunk al parar
     } else {
+      mediaRecorder.start(250);      // chunks periódicos
       mediaRecorder.addEventListener('start',()=>{ try{ setTimeout(()=>mediaRecorder.requestData(),200); }catch(_){ } });
-      mediaRecorder.start(250); // chunks periódicos
       setTimeout(()=>{ if(state==='recording' && !gotAny){ try{ mediaRecorder.requestData(); }catch(_){ } } },800);
     }
 
     // UI
     startTs=Date.now();
     recordBtn.setAttribute('aria-pressed','true');
-    recordBtn.classList.add('btn-recording');
+    recordBtn.classList.add('btn-recording','is-pressed'); // 3D presionado
     recordBtnText.textContent='Grabando…';
-    stopEmojiLoop(); startSpeech(); state='recording';
+    stopEmojiLoop(); state='recording';
 
     counterInt = setInterval(updateCounter, 200);
-    stopTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
+    stopTimer = setTimeout(()=> stopRecording(true), MAX_SECONDS*1000); // auto-stop por límite
     return true;
   }
 
-  async function stopRecording(){
+  async function stopRecording(fromAuto=false){
     if(state!=='recording' || !mediaRecorder) return;
     state='stopping';
 
-    // Mínimo + cola (iOS más larga)
+    // Garantiza mínimo + colita (más corta que antes para que no “se sienta largo”)
     const elapsed=Date.now()-startTs;
     const needMin=Math.max(0, MIN_REC_MS - elapsed);
     if(needMin) await new Promise(r=>setTimeout(r,needMin));
-    if(TAIL_PAD_MS) await new Promise(r=>setTimeout(r,TAIL_PAD_MS));
+    if(!fromAuto && TAIL_PAD_MS) await new Promise(r=>setTimeout(r,TAIL_PAD_MS));
 
-    // Pedir datos finales solo en NO-iOS
-    if (!isIOS()){
-      try{ mediaRecorder.requestData(); }catch(_){}
-    }
+    if (!isiOS()){ try{ mediaRecorder.requestData(); }catch(_){} }
 
     const stopped=new Promise(res=> mediaRecorder.addEventListener('stop',res,{once:true}));
     try{ mediaRecorder.stop(); }catch(_){}
+
     if(stopTimer){ clearTimeout(stopTimer); stopTimer=null; }
     if(counterInt){ clearInterval(counterInt); counterInt=null; }
-    stopSpeech();
 
     await stopped;
-    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS)); // iOS necesita más
+    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS)); // espera breve para último chunk
 
-    const built=(chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm')}) : null;
+    const built = (chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isiOS()?'audio/mp4':'audio/webm')}) : null;
     if(!built || built.size===0){
       showToast('No se capturó audio. Intenta de nuevo.');
       releaseStream(); resetUI(); return;
@@ -195,6 +185,7 @@ async function initRecordPage(){
     const url=URL.createObjectURL(blob);
     const reveal=()=>{
       preview.classList.remove('hidden');
+      recordBtn.classList.remove('is-pressed');
       recordBtn.classList.add('hidden');
       recordBtn.setAttribute('aria-pressed','false');
       recordBtnText.textContent='Grabar';
@@ -208,17 +199,46 @@ async function initRecordPage(){
     setTimeout(()=>{ if(!revealed){ revealed=true; reveal(); } },800);
   }
 
-  // Toggle: click = start/stop
-  recordBtn.addEventListener('click', async ()=>{
-    if (state==='idle' || state==='preview') { await startRecording(); return; }
-    if (state==='recording') { await stopRecording(); return; }
+  // HOLD: pointerdown inicia, pointerup detiene (si pasó el umbral)
+  let downAt = 0;
+  recordBtn.addEventListener('contextmenu', e=> e.preventDefault());
+
+  recordBtn.addEventListener('pointerdown', async (e)=>{
+    e.preventDefault();
+    try{ e.target.setPointerCapture(e.pointerId); }catch(_){}
+    downAt = Date.now();
+    if (state==='idle' || state==='preview'){
+      await startRecording();
+    }
   });
 
-  // Reintentar
+  async function endHold(){
+    const held = Date.now() - downAt;
+    if (held < HOLD_MIN_MS){
+      // Toque muy corto: cancelar si apenas iba empezando
+      if (state==='starting'){
+        // espera breve por si ya arrancó y detén
+        const t0=Date.now(); while(state==='starting' && Date.now()-t0<500){ await new Promise(r=>setTimeout(r,10)); }
+      }
+      if (state==='recording'){ await stopRecording(false); }
+      else { resetUI(); }
+      return;
+    }
+    if (state==='starting'){
+      const t0=Date.now(); while(state==='starting' && Date.now()-t0<800){ await new Promise(r=>setTimeout(r,10)); }
+    }
+    if (state==='recording'){ await stopRecording(false); }
+  }
+
+  recordBtn.addEventListener('pointerup',     async e=>{ e.preventDefault(); await endHold(); });
+  recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await endHold(); });
+  recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await endHold(); });
+
+  // Grabar de nuevo
   $('#redoBtn')?.addEventListener('click',()=>{
     try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(_){}
     releaseStream();
-    recordBtn.classList.remove('hidden');
+    recordBtn.classList.remove('hidden','is-pressed');
     resetUI();
   });
 
@@ -260,12 +280,12 @@ function initListenPage(){
   const moreBtn=$('#moreBtn');
   const testAud=document.createElement('audio');
 
-  const isIOSLoc=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
+  const isiOSLoc=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 
   const isPlayableRow=(row)=>{
     const mime=(row.mime_type||'').toLowerCase();
     const path=(row.file_path||'').toLowerCase();
-    if(isIOSLoc()) return mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4');
+    if(isiOSLoc()) return mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4');
     if(mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4')){ const ok=testAud.canPlayType('audio/mp4')||testAud.canPlayType('audio/aac'); if(ok) return true; }
     if(mime.includes('webm')||path.endsWith('.webm')){ const ok=testAud.canPlayType('audio/webm; codecs="opus"')||testAud.canPlayType('audio/webm'); if(ok) return true; }
     return false;
