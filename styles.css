@@ -101,7 +101,9 @@ body[data-page="record"] .emoji{ margin-bottom:38px; }
   50%  { transform: translateY(0) scale(1.06); }
   100% { transform: translateY(0) scale(1.00); }
 }
-.btn-circle.pulsing{ animation: pulseRec 1.2s ease-in-out infinite; }
+/* ==== TEMP: desactivar pulso para estabilizar gestos ==== */
+.btn-circle.pulsing { animation: none !important; }
+
 
 .btn-record[aria-pressed="true"]{
   background:var(--red); color:var(--white);
