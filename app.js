@@ -3,12 +3,18 @@ const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
 
 const MAX_SECONDS = 30;
-const MAX_BYTES   = 2.5 * 1024 * 1024;   // 2.5 MB
+const MAX_BYTES   = 2.5 * 1024 * 1024;
 const LONG_PRESS_MS = 250;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 700;                  // ↑ un poco para evitar blobs vacíos
-const IGNORE_LEAVE_MS = 300;             // ignorar leave/cancel al inicio
-const FORCE_NEW_STREAM_EVERY_TIME = true; // clave para la 2ª grabación en iOS/desktop
+const MIN_REC_MS = 600; // mínimo para evitar blobs vacíos
+
+/***** DETECCIÓN DE PLATAFORMA *****/
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+// Timings específicos por plataforma
+const TAIL_PAD_MS          = isIOS() ? 800 : 400; // cola previa al stop (captura el final)
+const STOP_FLUSH_WAIT_MS   = isIOS() ? 350 : 200; // espera tras stop para último chunk
+const FORCE_NEW_STREAM_EVERY_TIME = !isIOS();     // en iOS reusamos stream vivo para iniciar más rápido
 
 /***** CLIENTE SUPABASE *****/
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -21,9 +27,6 @@ const showSpinner = (on=true) => { const s = $('#spinner'); if(!s) return; s.cla
 /***** EMOJIS *****/
 const EMOJIS = [': D', ': )', ': |', ': (', ":’(", ': S'];
 const pickEmoji = (prev=null) => { let e = EMOJIS[Math.floor(Math.random()*EMOJIS.length)]; if (prev && e===prev) e = EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length]; return e; };
-
-/***** PLATAFORMA *****/
-const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 /***** GEO POR IP *****/
 const IP_PROVIDERS = ['https://ipapi.co/json/', 'https://ipwho.is/'];
@@ -100,7 +103,8 @@ async function initRecordPage(){
   let state = 'idle'; // idle | starting | recording | stopping | preview
 
   // Counter UI
-  const updateCounter = ()=>{ const secs = Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
+  const updateCounter = ()=>{ if (state!=='recording') return;
+    const secs = Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
     const s = (n)=> n<10? '0'+n : ''+n; counter.textContent = `0:${s(secs)} / 0:${s(MAX_SECONDS)}`; };
 
   // STT
@@ -113,13 +117,10 @@ async function initRecordPage(){
   const stopSpeech = ()=>{ try{ speechRec && speechRec.stop(); }catch(e){} };
 
   function releaseStream(){
-    try{
-      stream?.getTracks?.().forEach(tr=> { try{ tr.stop(); }catch(e){} });
-    }catch(e){}
+    try{ stream?.getTracks?.().forEach(tr=> { try{ tr.stop(); }catch(e){} }); }catch(e){}
     stream = null;
   }
 
-  // Reset UI a estado inicial
   function resetUI(){
     state='idle';
     recordBtn.setAttribute('aria-pressed','false');
@@ -135,27 +136,30 @@ async function initRecordPage(){
   }
   resetUI();
 
-  // Stream: nuevo en cada intento (mejora 2º intento iOS/desktop)
   async function acquireStreamFresh(){
-    try{
-      const ms = await navigator.mediaDevices.getUserMedia({ audio:true });
-      return ms;
-    }catch(e){
-      showToast('No hay permiso de micrófono');
-      return null;
-    }
+    try{ return await navigator.mediaDevices.getUserMedia({ audio:true }); }
+    catch(e){ showToast('No hay permiso de micrófono'); return null; }
   }
 
-  // Iniciar grabación (robusto)
-  async function startRecording(){
-    if (state!=='idle' && state!=='preview') return;
-    state = 'starting';
-
-    if (FORCE_NEW_STREAM_EVERY_TIME || !stream) {
+  async function ensureStreamForStart(){
+    if (FORCE_NEW_STREAM_EVERY_TIME){
       releaseStream();
       stream = await acquireStreamFresh();
-      if (!stream){ state='idle'; return false; }
+      return !!stream;
     }
+    // iOS: si ya está vivo, reúsalo (inicio más rápido, menos “pérdida” al principio)
+    const tr = stream?.getAudioTracks?.()[0];
+    if (tr && tr.readyState==='live' && tr.enabled) return true;
+    stream = await acquireStreamFresh();
+    return !!stream;
+  }
+
+  async function startRecording(){
+    if (state!=='idle' && state!=='preview') return false;
+    state='starting';
+
+    const ok = await ensureStreamForStart();
+    if (!ok){ state='idle'; return false; }
 
     chunks=[]; blob=null;
     try { mediaRecorder = new MediaRecorder(stream, { mimeType }); }
@@ -164,11 +168,10 @@ async function initRecordPage(){
     let gotAnyChunk = false;
     mediaRecorder.addEventListener('dataavailable', (e)=>{ if (e.data && e.data.size>0){ gotAnyChunk = true; chunks.push(e.data); } });
 
-    // “kick” temprano: en algunos Safari ayuda a empezar a soltar chunks
+    // “kick” temprano para que comience a soltar datos
     mediaRecorder.addEventListener('start', ()=>{ try{ setTimeout(()=> mediaRecorder.requestData(), 200); }catch(e){} });
 
-    // Comenzar con timeslice para asegurar chunks periódicos
-    mediaRecorder.start(250);
+    mediaRecorder.start(250); // chunks ~cada 250ms
 
     // UI → grabando
     startTs = Date.now(); pressedAt = startTs;
@@ -179,21 +182,22 @@ async function initRecordPage(){
 
     const int = setInterval(()=>{ if (state!=='recording' || mediaRecorder?.state!=='recording'){ clearInterval(int); return; } updateCounter(); }, 200);
 
-    // Failsafe: si en 800 ms no llegó ningún chunk, forzar uno
+    // Failsafe: si en 800ms no llegó ningún chunk, forzar uno
     setTimeout(()=>{ if (state==='recording' && !gotAnyChunk){ try{ mediaRecorder.requestData(); }catch(e){} } }, 800);
 
     stopTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
     return true;
   }
 
-  // Parar y devolver Blob (esperando el último chunk)
   async function stopRecording(){
     if (state!=='recording' || !mediaRecorder) return;
     state='stopping';
 
+    // Asegura duración mínima y añade "cola" para no cortar el final (iOS)
     const elapsed = Date.now() - startTs;
-    const waitMore = Math.max(0, MIN_REC_MS - elapsed);
-    if (waitMore) await new Promise(r=> setTimeout(r, waitMore));
+    const needMin = Math.max(0, MIN_REC_MS - elapsed);
+    if (needMin) await new Promise(r=> setTimeout(r, needMin));
+    if (TAIL_PAD_MS) await new Promise(r=> setTimeout(r, TAIL_PAD_MS));
 
     try { mediaRecorder.requestData(); } catch(e){}
     const stopped = new Promise(res => mediaRecorder.addEventListener('stop', res, {once:true}));
@@ -202,22 +206,19 @@ async function initRecordPage(){
     stopSpeech();
 
     await stopped;
-    // mini-tick para que llegue el último dataavailable en algunas plataformas
-    await new Promise(r=> setTimeout(r, 200));
+    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS));
 
-    // Construir blob
     const built = chunks && chunks.length ? new Blob(chunks, { type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm') }) : null;
     if (!built || built.size === 0){
       showToast('No se capturó audio. Intenta de nuevo.');
-      // liberar stream para que el siguiente intento sea completamente fresco
-      releaseStream();
-      resetUI(); 
+      if (!isIOS()) releaseStream(); // en iOS solemos reusar; fuera de iOS soltamos para forzar fresco
+      resetUI();
       return;
     }
     blob = built;
     durationMs = Date.now() - startTs;
 
-    // Mostrar preview (con fallback)
+    // Preview
     const url = URL.createObjectURL(blob);
     const reveal = ()=> {
       preview.classList.remove('hidden');
@@ -238,9 +239,11 @@ async function initRecordPage(){
 
   // Reintentar
   $('#redoBtn')?.addEventListener('click', ()=>{
-    // corte limpio de la sesión anterior
     try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(e){}
-    releaseStream();
+    if (!isIOS()) { // fuera de iOS prefiero forzar stream nuevo en el siguiente intento
+      try{ stream?.getTracks?.().forEach(t=>t.stop()); }catch(e){}
+      stream = null;
+    }
     recordBtn.style.display=''; 
     resetUI(); 
   });
@@ -259,7 +262,7 @@ async function initRecordPage(){
       const { error: insErr } = await sb.from('recordings').insert([{
         file_path: path, mime_type: mimeType, size_bytes: blob.size,
         duration_seconds: Math.min(MAX_SECONDS, Math.round(durationMs/1000)),
-        transcript: null, // STT diferida si la activamos
+        transcript: null,
         ip: geo.ip || null, location_city: geo.city || null, location_region: geo.region || null, location_country: geo.country || null,
         user_agent: navigator.userAgent || null, approved: true
       }]);
@@ -270,50 +273,47 @@ async function initRecordPage(){
     finally{ showSpinner(false); }
   });
 
-  /***** Botón: tap y long-press + efecto 3D *****/
-  let pressTimer = null, longPressActive = false;
+  /***** Botón: inicio inmediato + hold *****/
+  let pressTimer = null;
   const clearPressTimer = ()=>{ if (pressTimer){ clearTimeout(pressTimer); pressTimer=null; } };
 
   recordBtn.addEventListener('contextmenu', e=> e.preventDefault());
 
   recordBtn.addEventListener('pointerdown', async (e)=>{
     e.preventDefault();
-    if (state==='starting' || state==='stopping') return;
     try { e.target.setPointerCapture(e.pointerId); } catch(_) {}
     recordBtn.classList.add('is-pressed');
-    longPressActive=false;
     pressStartedAt = Date.now();
-    clearPressTimer();
-    pressTimer = setTimeout(async ()=>{
-      longPressActive = true;
-      if (state==='idle' || state==='preview') await startRecording();
-    }, LONG_PRESS_MS);
+
+    // INICIO INMEDIATO si estabas idle/preview (corrige pérdida al principio en hold)
+    if (state==='idle' || state==='preview'){
+      await startRecording();
+    }
   });
 
-  async function endPress(kind='up'){
+  async function endPress(){
     const delta = Date.now() - pressStartedAt;
-    clearPressTimer();
     recordBtn.classList.remove('is-pressed');
 
-    if (longPressActive){
-      if ((Date.now() - pressedAt) < IGNORE_LEAVE_MS && (kind==='leave'||kind==='cancel')) return;
-      if (state==='recording') await stopRecording();
-      longPressActive=false;
-    } else {
-      if (delta < LONG_PRESS_MS){
-        if (state==='recording') await stopRecording();
-        else if (state==='idle' || state==='preview') await startRecording();
-      }
+    if (state==='recording'){
+      // Si fue hold (≥ LONG_PRESS_MS) paramos al soltar; si fue tap corto, dejamos grabando (toggle)
+      if (delta >= LONG_PRESS_MS){ await stopRecording(); }
+      // si fue “tap corto”, no paramos aquí (continúa grabando) — ya corregimos el inicio temprano
+    } else if (state==='starting'){
+      // si suelta rapidísimo mientras empezaba, esperamos a que entre a recording y paramos
+      const t0 = Date.now();
+      while (state==='starting' && Date.now()-t0 < 800){ await new Promise(r=>setTimeout(r,10)); }
+      if (state==='recording'){ await stopRecording(); }
     }
   }
 
-  recordBtn.addEventListener('pointerup',     async e=>{ e.preventDefault(); await endPress('up'); });
-  recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await endPress('cancel'); });
-  recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await endPress('leave'); });
+  recordBtn.addEventListener('pointerup',     async e=>{ e.preventDefault(); await endPress(); });
+  recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await endPress(); });
+  recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await endPress(); });
 }
 
 /***********************
- * ESCUCHAR (sin cambios funcionales)
+ * ESCUCHAR (igual)
  ***********************/
 function initListenPage(){
   const list    = $('#audioList');
@@ -321,10 +321,12 @@ function initListenPage(){
   const moreBtn = $('#moreBtn');
   const testAud = document.createElement('audio');
 
+  const isIOSLoc = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
   const isPlayableRow = (row)=>{
     const mime=(row.mime_type||'').toLowerCase();
     const path=(row.file_path||'').toLowerCase();
-    if (isIOS()){ return mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4'); }
+    if (isIOSLoc()){ return mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4'); }
     if (mime.includes('mp4') || path.endsWith('.m4a') || path.endsWith('.mp4')){
       const ok = testAud.canPlayType('audio/mp4') || testAud.canPlayType('audio/aac'); if (ok) return true;
     }
