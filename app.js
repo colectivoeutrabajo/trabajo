@@ -6,8 +6,9 @@ const MAX_SECONDS = 30;
 const MAX_BYTES   = 2.5 * 1024 * 1024;   // 2.5 MB
 const LONG_PRESS_MS = 250;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 600;                  // duración mínima para evitar blobs vacíos
+const MIN_REC_MS = 700;                  // ↑ un poco para evitar blobs vacíos
 const IGNORE_LEAVE_MS = 300;             // ignorar leave/cancel al inicio
+const FORCE_NEW_STREAM_EVERY_TIME = true; // clave para la 2ª grabación en iOS/desktop
 
 /***** CLIENTE SUPABASE *****/
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -111,6 +112,13 @@ async function initRecordPage(){
   }
   const stopSpeech = ()=>{ try{ speechRec && speechRec.stop(); }catch(e){} };
 
+  function releaseStream(){
+    try{
+      stream?.getTracks?.().forEach(tr=> { try{ tr.stop(); }catch(e){} });
+    }catch(e){}
+    stream = null;
+  }
+
   // Reset UI a estado inicial
   function resetUI(){
     state='idle';
@@ -127,18 +135,14 @@ async function initRecordPage(){
   }
   resetUI();
 
-  // Stream (pedir solo en interacción de usuario; reacquire si track no está live)
-  async function ensureStream(){
+  // Stream: nuevo en cada intento (mejora 2º intento iOS/desktop)
+  async function acquireStreamFresh(){
     try{
-      const live = stream?.getAudioTracks?.()[0];
-      if (live && live.readyState==='live' && live.enabled) return true;
-    }catch(e){}
-    try{
-      stream = await navigator.mediaDevices.getUserMedia({ audio:true });
-      return true;
+      const ms = await navigator.mediaDevices.getUserMedia({ audio:true });
+      return ms;
     }catch(e){
       showToast('No hay permiso de micrófono');
-      return false;
+      return null;
     }
   }
 
@@ -146,15 +150,22 @@ async function initRecordPage(){
   async function startRecording(){
     if (state!=='idle' && state!=='preview') return;
     state = 'starting';
-    const ok = await ensureStream(); if (!ok){ state='idle'; return false; }
+
+    if (FORCE_NEW_STREAM_EVERY_TIME || !stream) {
+      releaseStream();
+      stream = await acquireStreamFresh();
+      if (!stream){ state='idle'; return false; }
+    }
 
     chunks=[]; blob=null;
     try { mediaRecorder = new MediaRecorder(stream, { mimeType }); }
     catch(e){ mediaRecorder = new MediaRecorder(stream); mimeType = mediaRecorder.mimeType || mimeType; }
 
-    mediaRecorder.ondataavailable = (e)=>{ if (e.data && e.data.size>0) chunks.push(e.data); };
+    let gotAnyChunk = false;
+    mediaRecorder.addEventListener('dataavailable', (e)=>{ if (e.data && e.data.size>0){ gotAnyChunk = true; chunks.push(e.data); } });
 
-    mediaRecorder.onstop = ()=>{ /* armado de blob se hace en stopRecording() tras esperar un tick */ };
+    // “kick” temprano: en algunos Safari ayuda a empezar a soltar chunks
+    mediaRecorder.addEventListener('start', ()=>{ try{ setTimeout(()=> mediaRecorder.requestData(), 200); }catch(e){} });
 
     // Comenzar con timeslice para asegurar chunks periódicos
     mediaRecorder.start(250);
@@ -167,6 +178,10 @@ async function initRecordPage(){
     stopEmojiLoop(); startSpeech(); state='recording';
 
     const int = setInterval(()=>{ if (state!=='recording' || mediaRecorder?.state!=='recording'){ clearInterval(int); return; } updateCounter(); }, 200);
+
+    // Failsafe: si en 800 ms no llegó ningún chunk, forzar uno
+    setTimeout(()=>{ if (state==='recording' && !gotAnyChunk){ try{ mediaRecorder.requestData(); }catch(e){} } }, 800);
+
     stopTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
     return true;
   }
@@ -188,21 +203,22 @@ async function initRecordPage(){
 
     await stopped;
     // mini-tick para que llegue el último dataavailable en algunas plataformas
-    await new Promise(r=> setTimeout(r, 30));
+    await new Promise(r=> setTimeout(r, 200));
 
     // Construir blob
     const built = chunks && chunks.length ? new Blob(chunks, { type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm') }) : null;
     if (!built || built.size === 0){
       showToast('No se capturó audio. Intenta de nuevo.');
-      resetUI(); return;
+      // liberar stream para que el siguiente intento sea completamente fresco
+      releaseStream();
+      resetUI(); 
+      return;
     }
     blob = built;
     durationMs = Date.now() - startTs;
 
     // Mostrar preview (con fallback)
     const url = URL.createObjectURL(blob);
-    player.setAttribute('playsinline','true');
-    player.src = url;
     const reveal = ()=> {
       preview.classList.remove('hidden');
       recordBtn.classList.add('hidden'); recordBtn.style.display='none';
@@ -211,6 +227,9 @@ async function initRecordPage(){
       recordBtnText.textContent='Grabar';
       state='preview';
     };
+    player.setAttribute('playsinline','true');
+    player.src = url;
+
     let revealed=false;
     player.addEventListener('loadedmetadata', ()=>{ if(!revealed){ revealed=true; reveal(); } }, {once:true});
     player.addEventListener('canplaythrough', ()=>{ if(!revealed){ revealed=true; reveal(); } }, {once:true});
@@ -218,7 +237,13 @@ async function initRecordPage(){
   }
 
   // Reintentar
-  $('#redoBtn')?.addEventListener('click', ()=>{ recordBtn.style.display=''; resetUI(); });
+  $('#redoBtn')?.addEventListener('click', ()=>{
+    // corte limpio de la sesión anterior
+    try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(e){}
+    releaseStream();
+    recordBtn.style.display=''; 
+    resetUI(); 
+  });
 
   // Enviar
   $('#sendBtn')?.addEventListener('click', async ()=>{
@@ -234,7 +259,7 @@ async function initRecordPage(){
       const { error: insErr } = await sb.from('recordings').insert([{
         file_path: path, mime_type: mimeType, size_bytes: blob.size,
         duration_seconds: Math.min(MAX_SECONDS, Math.round(durationMs/1000)),
-        transcript: transcript || null,
+        transcript: null, // STT diferida si la activamos
         ip: geo.ip || null, location_city: geo.city || null, location_region: geo.region || null, location_country: geo.country || null,
         user_agent: navigator.userAgent || null, approved: true
       }]);
@@ -271,13 +296,11 @@ async function initRecordPage(){
     recordBtn.classList.remove('is-pressed');
 
     if (longPressActive){
-      // Ignorar leaves/cancels muy tempranos
       if ((Date.now() - pressedAt) < IGNORE_LEAVE_MS && (kind==='leave'||kind==='cancel')) return;
       if (state==='recording') await stopRecording();
       longPressActive=false;
     } else {
       if (delta < LONG_PRESS_MS){
-        // Tap corto: toggle
         if (state==='recording') await stopRecording();
         else if (state==='idle' || state==='preview') await startRecording();
       }
