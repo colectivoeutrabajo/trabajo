@@ -3,7 +3,7 @@ name: Convert audio to M4A (replace originals)
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 * * * *"   # cada hora (ajusta si quieres)
+    - cron: "0 * * * *"   # cada hora; ajusta si quieres
 
 jobs:
   convert:
@@ -21,9 +21,27 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          node -v
+          npm -v
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
 
-      - name: Install deps
-        run: npm ci
+      - name: Install deps (ci if lockfile, else install)
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm i --no-fund --no-audit
+          fi
+
+      - name: Dry peek candidates (no cambios, solo prueba)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: audios
+          SUPABASE_TABLE: recordings
+          APPROVED_ONLY: "true"
+        run: node scripts/peek.mjs
 
       - name: Run conversion
         env:
@@ -31,8 +49,8 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: audios
           SUPABASE_TABLE: recordings
-          BATCH_LIMIT: "30"          # procesa hasta 30 por corrida
-          APPROVED_ONLY: "true"      # solo los approved (cámbialo a false si quieres todo)
-          DRY_RUN: "false"           # ponlo "true" para probar sin tocar nada
-          BITRATE: "64k"             # 64k ahorra cuota; puedes usar 96k o 128k
+          BATCH_LIMIT: "30"
+          APPROVED_ONLY: "true"
+          DRY_RUN: "false"   # pon "true" si quieres ensayar sin tocar nada
+          BITRATE: "64k"
         run: npm run convert
