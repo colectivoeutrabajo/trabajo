@@ -4,12 +4,17 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const MAX_SECONDS = 30;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 650;                    // evita taps ultra cortos
-const TAIL_PAD_MS = /iPad|iPhone|iPod/.test(navigator.userAgent) ? 600 : 300;      // “colita” antes de parar (iOS más larga)
-const STOP_FLUSH_WAIT_MS = /iPad|iPhone|iPod/.test(navigator.userAgent) ? 320 : 180; // espera del último chunk tras stop
-const FORCE_NEW_STREAM_EVERY_TIME = true;  // stream fresco en cada intento
+const MIN_REC_MS = 650; // evita taps ultracortos
 
-/***** CLIENTE SUPABASE *****/
+/***** DETECCIÓN *****/
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+
+// Timings por plataforma
+const TAIL_PAD_MS        = isIOS() ? 1200 : 300; // cola antes de stop (iOS más larga)
+const STOP_FLUSH_WAIT_MS = isIOS() ? 600  : 180; // espera para último chunk tras stop
+const FORCE_NEW_STREAM_EVERY_TIME = true;       // stream fresco por intento
+
+/***** SUPABASE *****/
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /***** HELPERS UI *****/
@@ -21,7 +26,7 @@ const showSpinner = (on=true)=>{ const s=$('#spinner'); if(!s) return; s.classLi
 const EMOJIS=[": D",": )",": |",": (",":’(",": S"];
 const pickEmoji=(prev=null)=>{ let e=EMOJIS[Math.floor(Math.random()*EMOJIS.length)]; if(prev&&e===prev) e=EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length]; return e; };
 
-/***** GEO IP (ligero) *****/
+/***** GEO IP *****/
 async function getGeoByIP(){
   const providers=['https://ipapi.co/json/','https://ipwho.is/'];
   for(const url of providers){
@@ -36,23 +41,22 @@ async function getGeoByIP(){
 }
 
 /***** MIME/EXT *****/
-const isIOS = ()=> /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 function pickSupportedMime(){
   const prefs = isIOS()
     ? ['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus']
     : ['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg;codecs=opus'];
-  for (const t of prefs){ if (window.MediaRecorder?.isTypeSupported?.(t)) return t; }
-  return isIOS() ? 'audio/mp4' : 'audio/webm';
+  for(const t of prefs){ if(window.MediaRecorder?.isTypeSupported?.(t)) return t; }
+  return isIOS()? 'audio/mp4' : 'audio/webm';
 }
 function extensionFromMime(m){
   if(!m) return isIOS()?'m4a':'webm';
-  if(m.includes('mp4')) return 'm4a';
-  if(m.includes('webm'))return 'webm';
-  if(m.includes('m4a')) return 'm4a';
-  if(m.includes('mpeg'))return 'mp3';
-  if(m.includes('ogg')) return 'ogg';
-  if(m.includes('wav')) return 'wav';
-  return isIOS()?'m4a':'webm';
+  if(m.includes('mp4'))  return 'm4a';
+  if(m.includes('webm')) return 'webm';
+  if(m.includes('m4a'))  return 'm4a';
+  if(m.includes('mpeg')) return 'mp3';
+  if(m.includes('ogg'))  return 'ogg';
+  if(m.includes('wav'))  return 'wav';
+  return isIOS()? 'm4a' : 'webm';
 }
 
 /***** ROUTER *****/
@@ -63,7 +67,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 /***********************
- * PÁGINA: GRABAR
+ * GRABAR (TOGGLE SIMPLE + iOS single-blob)
  ***********************/
 async function initRecordPage(){
   const emojiDisplay=$('#emojiDisplay');
@@ -73,14 +77,14 @@ async function initRecordPage(){
   const preview=$('#preview');
   const player=$('#player');
 
-  // Emojis cada 2s con disolver
+  // Emojis
   let currentEmoji=pickEmoji(); emojiDisplay.textContent=currentEmoji;
   let emojiTimer=null;
   const startEmojiLoop=()=>{ stopEmojiLoop(); emojiTimer=setInterval(()=>{ emojiDisplay.classList.add('fading'); setTimeout(()=>{ currentEmoji=pickEmoji(currentEmoji); emojiDisplay.textContent=currentEmoji; emojiDisplay.classList.remove('fading'); },150); },EMOJI_INTERVAL_MS); };
   const stopEmojiLoop =()=>{ if(emojiTimer){ clearInterval(emojiTimer); emojiTimer=null; } };
   startEmojiLoop();
 
-  // Estado de grabación
+  // Estado
   let stream=null, mediaRecorder=null, chunks=[];
   let startTs=0, durationMs=0, blob=null, mimeType=pickSupportedMime();
   let speechRec=null, stopTimer=null, counterInt=null;
@@ -110,8 +114,8 @@ async function initRecordPage(){
   async function acquireStreamFresh(){ try{ return await navigator.mediaDevices.getUserMedia({audio:true}); }catch(_){ showToast('No hay permiso de micrófono'); return null; } }
 
   function startSpeech(){
-    if (isIOS()) return; // deshabilitado en iOS para no mostrar avisos extra
-    const SR = window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
+    if (isIOS()) return; // evitamos prompt extra
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR) return;
     const rec=new SR(); rec.lang='es-MX'; rec.interimResults=true; rec.continuous=true;
     rec.onerror=()=>{}; try{ rec.start(); speechRec=rec; }catch(_){}
   }
@@ -121,37 +125,38 @@ async function initRecordPage(){
     if(state!=='idle' && state!=='preview') return false;
     state='starting';
 
-    // stream fresco siempre (no vuelve a pedir permiso si ya está concedido)
+    // stream fresco (si ya concedido, no vuelve a pedir)
     releaseStream();
     stream=await acquireStreamFresh();
     if(!stream){ state='idle'; return false; }
 
-    // MediaRecorder
     chunks=[]; blob=null;
+
+    // MediaRecorder
     try{ mediaRecorder=new MediaRecorder(stream,{mimeType}); }
     catch(_){ mediaRecorder=new MediaRecorder(stream); mimeType=mediaRecorder.mimeType||mimeType; }
 
     let gotAny=false;
     mediaRecorder.addEventListener('dataavailable',(e)=>{ if(e.data && e.data.size>0){ gotAny=true; chunks.push(e.data); } });
-    mediaRecorder.addEventListener('start',()=>{ try{ setTimeout(()=>mediaRecorder.requestData(), 200); }catch(_){ } });
 
-    mediaRecorder.start(250); // chunks ~250ms
+    // iOS: single-blob (sin timeslice, sin requestData); Otros: timeslice 250ms
+    if (isIOS()){
+      mediaRecorder.start(); // un solo chunk al detener
+    } else {
+      mediaRecorder.addEventListener('start',()=>{ try{ setTimeout(()=>mediaRecorder.requestData(),200); }catch(_){ } });
+      mediaRecorder.start(250); // chunks periódicos
+      setTimeout(()=>{ if(state==='recording' && !gotAny){ try{ mediaRecorder.requestData(); }catch(_){ } } },800);
+    }
 
-    // UI ← grabando (sin pulso)
+    // UI
     startTs=Date.now();
     recordBtn.setAttribute('aria-pressed','true');
     recordBtn.classList.add('btn-recording');
     recordBtnText.textContent='Grabando…';
     stopEmojiLoop(); startSpeech(); state='recording';
 
-    // contador
     counterInt = setInterval(updateCounter, 200);
-
-    // si no llegó nada en 800ms, pedir un chunk
-    setTimeout(()=>{ if(state==='recording' && !gotAny){ try{ mediaRecorder.requestData(); }catch(_){ } } }, 800);
-
-    // límite duro a 30s
-    stopTimer=setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
+    stopTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
     return true;
   }
 
@@ -159,28 +164,30 @@ async function initRecordPage(){
     if(state!=='recording' || !mediaRecorder) return;
     state='stopping';
 
-    // duración mínima + colita para no cortar el final (más larga en iOS)
+    // Mínimo + cola (iOS más larga)
     const elapsed=Date.now()-startTs;
     const needMin=Math.max(0, MIN_REC_MS - elapsed);
     if(needMin) await new Promise(r=>setTimeout(r,needMin));
     if(TAIL_PAD_MS) await new Promise(r=>setTimeout(r,TAIL_PAD_MS));
 
-    try{ mediaRecorder.requestData(); }catch(_){ }
+    // Pedir datos finales solo en NO-iOS
+    if (!isIOS()){
+      try{ mediaRecorder.requestData(); }catch(_){}
+    }
+
     const stopped=new Promise(res=> mediaRecorder.addEventListener('stop',res,{once:true}));
-    try{ mediaRecorder.stop(); }catch(_){ }
+    try{ mediaRecorder.stop(); }catch(_){}
     if(stopTimer){ clearTimeout(stopTimer); stopTimer=null; }
     if(counterInt){ clearInterval(counterInt); counterInt=null; }
     stopSpeech();
 
     await stopped;
-    await new Promise(r=>setTimeout(r, STOP_FLUSH_WAIT_MS)); // esperar último chunk
+    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS)); // iOS necesita más
 
-    const built = (chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm')}) : null;
+    const built=(chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm')}) : null;
     if(!built || built.size===0){
       showToast('No se capturó audio. Intenta de nuevo.');
-      releaseStream();
-      resetUI(); 
-      return;
+      releaseStream(); resetUI(); return;
     }
     blob=built; durationMs=Date.now()-startTs;
 
@@ -201,13 +208,13 @@ async function initRecordPage(){
     setTimeout(()=>{ if(!revealed){ revealed=true; reveal(); } },800);
   }
 
-  // BOTÓN: toggle simple (click = iniciar / click = parar)
+  // Toggle: click = start/stop
   recordBtn.addEventListener('click', async ()=>{
     if (state==='idle' || state==='preview') { await startRecording(); return; }
     if (state==='recording') { await stopRecording(); return; }
   });
 
-  // Grabar de nuevo → reset limpio
+  // Reintentar
   $('#redoBtn')?.addEventListener('click',()=>{
     try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(_){}
     releaseStream();
@@ -245,7 +252,7 @@ async function initRecordPage(){
 }
 
 /***********************
- * PÁGINA: ESCUCHAR (igual que la tuya)
+ * ESCUCHAR (igual)
  ***********************/
 function initListenPage(){
   const list=$('#audioList');
