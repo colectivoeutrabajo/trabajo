@@ -55,15 +55,12 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Clonar si no existe
           if [ ! -d whisper.cpp ]; then
             git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git
           fi
-
           cd whisper.cpp
           mkdir -p build-cache models
 
-          # Descargar modelo 'small' con reintentos y fallback
           if [ ! -f models/ggml-small.bin ]; then
             echo "Descargando ggml-small.bin …"
             (curl -L --retry 5 --retry-delay 5 -o models/ggml-small.bin \
@@ -73,11 +70,9 @@ jobs:
                   https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.5/ggml-small.bin)
           fi
 
-          # Compilar con CMake a ./build
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release -j2
 
-          # Detectar binario: en versiones recientes queda en build/bin/{main|whisper-cli}
           BIN=""
           if [ -f build/bin/main ]; then
             BIN="build/bin/main"
@@ -89,16 +84,10 @@ jobs:
             exit 1
           fi
 
-          # Probar que corre
           "$BIN" -h | head -n 10 || true
-
-          # Copiar a cache (ruta que usa el script transcribe.mjs)
           cp -f "$BIN" build-cache/main
-
-          # Mostrar qué se generó
           ls -lh build-cache
           ls -lh models
-
           cd ..
 
       - name: Install Node deps (repo)
@@ -109,16 +98,27 @@ jobs:
             npm i --no-fund --no-audit
           fi
 
-      - name: Run transcription (batch 20, lang=es, mark bad)
+      - name: Peek candidates (debug)
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_BUCKET: audios
           SUPABASE_TABLE: recordings
-          BATCH_LIMIT: "20"
+          TRANSCRIPT_COLUMN: transcript
+          APPROVED_ONLY: "true"
+        run: node scripts/peek-transcripts.mjs
+
+      - name: Run transcription (batch 30, lang=es, mark bad)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: audios
+          SUPABASE_TABLE: recordings
+          BATCH_LIMIT: "30"
           LANGUAGE: "es"
           MARK_BAD: "true"
           DRY_RUN: "false"
+          TRANSCRIPT_COLUMN: "transcript"   # cambia aquí si tu columna se llama distinto
           WHISPER_BIN: "./whisper.cpp/build-cache/main"
           WHISPER_MODEL: "./whisper.cpp/models/ggml-small.bin"
         run: node scripts/transcribe.mjs
