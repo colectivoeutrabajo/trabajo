@@ -4,28 +4,26 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const MAX_SECONDS = 30;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 650; // duración mínima para evitar blobs vacíos
+const MIN_REC_MS = 650;                         // evita blobs vacíos por taps ultracortos
+const HOLD_THRESHOLD_MS = 250;                  // ≥ esto = hold (soltar detiene)
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+const TAIL_PAD_MS        = isIOS() ? 350 : 150; // “colita” antes de stop (iOS corta pero no se siente largo)
+const STOP_FLUSH_WAIT_MS = isIOS() ? 300 : 150; // espera para último chunk tras stop
+const FORCE_NEW_STREAM_EVERY_TIME = true;
 
-/***** Plataforma y timings *****/
-const isiOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-// Colita al soltar (pequeña en iOS para no cortar final, pequeña también en desktop/Android)
-const TAIL_PAD_MS        = isiOS() ? 350 : 150;
-const STOP_FLUSH_WAIT_MS = isiOS() ? 300 : 150;
-const FORCE_NEW_STREAM_EVERY_TIME = true; // stream fresco siempre (no vuelve a pedir permiso si ya está concedido)
-
-/***** Supabase *****/
+/***** SUPABASE *****/
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-/***** Helpers UI *****/
+/***** HELPERS UI *****/
 const $ = (s)=>document.querySelector(s);
 const showToast = (m)=>{ const t=$('#toast'); if(!t) return; t.textContent=m; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2600); };
 const showSpinner = (on=true)=>{ const s=$('#spinner'); if(!s) return; s.classList.toggle('hidden',!on); };
 
-/***** Emojis *****/
+/***** EMOJIS *****/
 const EMOJIS=[": D",": )",": |",": (",":’(",": S"];
 const pickEmoji=(prev=null)=>{ let e=EMOJIS[Math.floor(Math.random()*EMOJIS.length)]; if(prev&&e===prev) e=EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length]; return e; };
 
-/***** Geo IP *****/
+/***** GEO IP *****/
 async function getGeoByIP(){
   const providers=['https://ipapi.co/json/','https://ipwho.is/'];
   for(const url of providers){
@@ -41,24 +39,24 @@ async function getGeoByIP(){
 
 /***** MIME/EXT *****/
 function pickSupportedMime(){
-  const prefs = isiOS()
+  const prefs = isIOS()
     ? ['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus']
     : ['audio/webm;codecs=opus','audio/mp4','audio/webm','audio/ogg;codecs=opus'];
   for(const t of prefs){ if(window.MediaRecorder?.isTypeSupported?.(t)) return t; }
-  return isiOS()? 'audio/mp4' : 'audio/webm';
+  return isIOS()? 'audio/mp4' : 'audio/webm';
 }
 function extensionFromMime(m){
-  if(!m) return isiOS()?'m4a':'webm';
+  if(!m) return isIOS()?'m4a':'webm';
   if(m.includes('mp4'))  return 'm4a';
   if(m.includes('webm')) return 'webm';
   if(m.includes('m4a'))  return 'm4a';
   if(m.includes('mpeg')) return 'mp3';
   if(m.includes('ogg'))  return 'ogg';
   if(m.includes('wav'))  return 'wav';
-  return isiOS()? 'm4a' : 'webm';
+  return isIOS()? 'm4a' : 'webm';
 }
 
-/***** Router *****/
+/***** ROUTER *****/
 document.addEventListener('DOMContentLoaded',()=>{
   const page=document.body.dataset.page;
   if(page==='record') initRecordPage();
@@ -66,7 +64,7 @@ document.addEventListener('DOMContentLoaded',()=>{
 });
 
 /***********************
- * GRABAR — HOLD-TO-RECORD
+ * GRABAR — DUAL: TAP (toggle) + HOLD
  ***********************/
 async function initRecordPage(){
   const emojiDisplay=$('#emojiDisplay');
@@ -76,7 +74,7 @@ async function initRecordPage(){
   const preview=$('#preview');
   const player=$('#player');
 
-  // Emojis c/2s con disolver (pausados al grabar)
+  // Emojis c/2s con disolver (pausados en grabación/preview)
   let currentEmoji=pickEmoji(); emojiDisplay.textContent=currentEmoji;
   let emojiTimer=null;
   const startEmojiLoop=()=>{ stopEmojiLoop(); emojiTimer=setInterval(()=>{ emojiDisplay.classList.add('fading'); setTimeout(()=>{ currentEmoji=pickEmoji(currentEmoji); emojiDisplay.textContent=currentEmoji; emojiDisplay.classList.remove('fading'); },150); },EMOJI_INTERVAL_MS); };
@@ -88,7 +86,7 @@ async function initRecordPage(){
   let startTs=0, durationMs=0, blob=null, mimeType=pickSupportedMime();
   let stopTimer=null, counterInt=null;
   let state='idle'; // idle | starting | recording | stopping | preview
-  const HOLD_MIN_MS = 120; // umbral para considerar que sí quiso mantener
+  let downAt=0, startedByThisDown=false; // para distinguir tap vs hold
 
   const updateCounter=()=>{ if(state!=='recording') return;
     const secs=Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
@@ -117,7 +115,6 @@ async function initRecordPage(){
     if(state!=='idle' && state!=='preview') return false;
     state='starting';
 
-    // Stream fresco (no re-pide permiso si ya está concedido)
     if (FORCE_NEW_STREAM_EVERY_TIME){ releaseStream(); }
     if(!stream){
       stream=await acquireStreamFresh();
@@ -126,30 +123,28 @@ async function initRecordPage(){
 
     chunks=[]; blob=null;
 
-    // MediaRecorder: iOS single-blob; otros timeslice
     try{ mediaRecorder=new MediaRecorder(stream,{mimeType}); }
     catch(_){ mediaRecorder=new MediaRecorder(stream); mimeType=mediaRecorder.mimeType||mimeType; }
 
-    let gotAny=false;
-    mediaRecorder.addEventListener('dataavailable',(e)=>{ if(e.data && e.data.size>0){ gotAny=true; chunks.push(e.data); } });
+    mediaRecorder.addEventListener('dataavailable',(e)=>{ if(e.data && e.data.size>0){ chunks.push(e.data); } });
 
-    if (isiOS()){
-      mediaRecorder.start();         // un solo chunk al parar
+    if (isIOS()){
+      mediaRecorder.start(); // single-blob (un solo dataavailable al parar)
     } else {
-      mediaRecorder.start(250);      // chunks periódicos
+      mediaRecorder.start(250); // chunks periódicos
       mediaRecorder.addEventListener('start',()=>{ try{ setTimeout(()=>mediaRecorder.requestData(),200); }catch(_){ } });
-      setTimeout(()=>{ if(state==='recording' && !gotAny){ try{ mediaRecorder.requestData(); }catch(_){ } } },800);
+      setTimeout(()=>{ try{ mediaRecorder.requestData(); }catch(_){ } },800);
     }
 
     // UI
     startTs=Date.now();
     recordBtn.setAttribute('aria-pressed','true');
-    recordBtn.classList.add('btn-recording','is-pressed'); // 3D presionado
+    recordBtn.classList.add('btn-recording');
     recordBtnText.textContent='Grabando…';
     stopEmojiLoop(); state='recording';
 
     counterInt = setInterval(updateCounter, 200);
-    stopTimer = setTimeout(()=> stopRecording(true), MAX_SECONDS*1000); // auto-stop por límite
+    stopTimer = setTimeout(()=> stopRecording(true), MAX_SECONDS*1000);
     return true;
   }
 
@@ -157,24 +152,21 @@ async function initRecordPage(){
     if(state!=='recording' || !mediaRecorder) return;
     state='stopping';
 
-    // Garantiza mínimo + colita (más corta que antes para que no “se sienta largo”)
     const elapsed=Date.now()-startTs;
     const needMin=Math.max(0, MIN_REC_MS - elapsed);
     if(needMin) await new Promise(r=>setTimeout(r,needMin));
     if(!fromAuto && TAIL_PAD_MS) await new Promise(r=>setTimeout(r,TAIL_PAD_MS));
-
-    if (!isiOS()){ try{ mediaRecorder.requestData(); }catch(_){} }
+    if (!isIOS()){ try{ mediaRecorder.requestData(); }catch(_){ } }
 
     const stopped=new Promise(res=> mediaRecorder.addEventListener('stop',res,{once:true}));
     try{ mediaRecorder.stop(); }catch(_){}
-
     if(stopTimer){ clearTimeout(stopTimer); stopTimer=null; }
     if(counterInt){ clearInterval(counterInt); counterInt=null; }
 
     await stopped;
-    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS)); // espera breve para último chunk
+    await new Promise(r=> setTimeout(r, STOP_FLUSH_WAIT_MS));
 
-    const built = (chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isiOS()?'audio/mp4':'audio/webm')}) : null;
+    const built = (chunks && chunks.length) ? new Blob(chunks,{type: mimeType || mediaRecorder?.mimeType || (isIOS()?'audio/mp4':'audio/webm')}) : null;
     if(!built || built.size===0){
       showToast('No se capturó audio. Intenta de nuevo.');
       releaseStream(); resetUI(); return;
@@ -199,42 +191,53 @@ async function initRecordPage(){
     setTimeout(()=>{ if(!revealed){ revealed=true; reveal(); } },800);
   }
 
-  // HOLD: pointerdown inicia, pointerup detiene (si pasó el umbral)
-  let downAt = 0;
+  // ---- GESTOS: dual ----
   recordBtn.addEventListener('contextmenu', e=> e.preventDefault());
 
+  // pointerdown: si está idle → empieza y marcamos “startedByThisDown”
   recordBtn.addEventListener('pointerdown', async (e)=>{
     e.preventDefault();
     try{ e.target.setPointerCapture(e.pointerId); }catch(_){}
     downAt = Date.now();
-    if (state==='idle' || state==='preview'){
-      await startRecording();
+    recordBtn.classList.add('is-pressed');
+
+    startedByThisDown = (state==='idle' || state==='preview');
+    if (startedByThisDown){
+      await startRecording(); // inicio inmediato para capturar bien el principio
     }
   });
 
-  async function endHold(){
+  async function waitForRecording(timeout=800){
+    const t0=Date.now();
+    while(Date.now()-t0<timeout){ if(state==='recording') return true; await new Promise(r=>setTimeout(r,10)); }
+    return false;
+  }
+
+  async function finishPress(){
+    recordBtn.classList.remove('is-pressed');
     const held = Date.now() - downAt;
-    if (held < HOLD_MIN_MS){
-      // Toque muy corto: cancelar si apenas iba empezando
-      if (state==='starting'){
-        // espera breve por si ya arrancó y detén
-        const t0=Date.now(); while(state==='starting' && Date.now()-t0<500){ await new Promise(r=>setTimeout(r,10)); }
+
+    if (startedByThisDown){
+      // Caso HOLD: si mantuvo ≥ umbral, soltar = detener; si fue tap (< umbral), sigue grabando (toggle)
+      if (held >= HOLD_THRESHOLD_MS){
+        if (state==='starting'){ await waitForRecording(); }
+        if (state==='recording'){ await stopRecording(false); }
       }
-      if (state==='recording'){ await stopRecording(false); }
-      else { resetUI(); }
+      // else: fue tap corto → sigue grabando; detendrá con otro tap o con hold posterior
+      startedByThisDown=false;
       return;
     }
-    if (state==='starting'){
-      const t0=Date.now(); while(state==='starting' && Date.now()-t0<800){ await new Promise(r=>setTimeout(r,10)); }
-    }
+
+    // Llegamos aquí si ya estaba grabando antes de presionar (toggle para detener)
+    if (state==='starting'){ await waitForRecording(); }
     if (state==='recording'){ await stopRecording(false); }
   }
 
-  recordBtn.addEventListener('pointerup',     async e=>{ e.preventDefault(); await endHold(); });
-  recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await endHold(); });
-  recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await endHold(); });
+  recordBtn.addEventListener('pointerup',     async e=>{ e.preventDefault(); await finishPress(); });
+  recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await finishPress(); });
+  recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await finishPress(); });
 
-  // Grabar de nuevo
+  // “Grabar de nuevo” — reset limpio
   $('#redoBtn')?.addEventListener('click',()=>{
     try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(_){}
     releaseStream();
@@ -280,12 +283,12 @@ function initListenPage(){
   const moreBtn=$('#moreBtn');
   const testAud=document.createElement('audio');
 
-  const isiOSLoc=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
+  const iOSLoc=()=>/iPad|iPhone|iPod/.test(navigator.userAgent)&&!window.MSStream;
 
   const isPlayableRow=(row)=>{
     const mime=(row.mime_type||'').toLowerCase();
     const path=(row.file_path||'').toLowerCase();
-    if(isiOSLoc()) return mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4');
+    if(iOSLoc()) return mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4');
     if(mime.includes('mp4')||path.endsWith('.m4a')||path.endsWith('.mp4')){ const ok=testAud.canPlayType('audio/mp4')||testAud.canPlayType('audio/aac'); if(ok) return true; }
     if(mime.includes('webm')||path.endsWith('.webm')){ const ok=testAud.canPlayType('audio/webm; codecs="opus"')||testAud.canPlayType('audio/webm'); if(ok) return true; }
     return false;
