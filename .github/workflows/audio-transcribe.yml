@@ -1,9 +1,9 @@
 name: Transcribe audio to text (Whisper.cpp, nightly)
 
 on:
-  workflow_dispatch: {}         # permite correrlo manualmente
+  workflow_dispatch: {}
   schedule:
-    - cron: "0 4 * * *"         # 04:00 UTC = 22:00 MX Centro
+    - cron: "0 4 * * *"   # 04:00 UTC = 22:00 MX Centro
 
 jobs:
   transcribe:
@@ -31,7 +31,12 @@ jobs:
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
-      # Cache del binario whisper.cpp (build) y del modelo
+      - name: Install build deps (toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl ca-certificates
+
+      # Cache del binario compilado y del modelo para acelerar corridas futuras
       - name: Cache whisper build
         id: cache-whisper-build
         uses: actions/cache@v4
@@ -46,12 +51,7 @@ jobs:
           path: whisper.cpp/models/ggml-small.bin
           key: whisper-model-small-v1
 
-      - name: Install build deps (toolchain)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential git curl ca-certificates
-
-      - name: Clone & build whisper.cpp (robusto, con fallback de modelo)
+      - name: Clone & build whisper.cpp (detecta binario en build/bin)
         run: |
           set -euxo pipefail
 
@@ -63,9 +63,9 @@ jobs:
           cd whisper.cpp
           mkdir -p build-cache models
 
-          # Descargar modelo small con reintentos; fallback a mirror de GitHub Releases
+          # Descargar modelo 'small' con reintentos y fallback
           if [ ! -f models/ggml-small.bin ]; then
-            echo "Descargando modelo ggml-small.bin …"
+            echo "Descargando ggml-small.bin …"
             (curl -L --retry 5 --retry-delay 5 -o models/ggml-small.bin \
               https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin) \
               || (echo "HuggingFace falló, intento mirror…" && \
@@ -73,16 +73,27 @@ jobs:
                   https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.5/ggml-small.bin)
           fi
 
-          # Compilar (usa 2 hilos para ser amable con el runner)
-          make clean || true
-          make -j2
+          # Compilar con CMake a ./build
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release -j2
 
-          # Verifica que el binario exista y funciona
-          file main || true
-          ./main -h | head -n 5 || true
+          # Detectar binario: en versiones recientes queda en build/bin/{main|whisper-cli}
+          BIN=""
+          if [ -f build/bin/main ]; then
+            BIN="build/bin/main"
+          elif [ -f build/bin/whisper-cli ]; then
+            BIN="build/bin/whisper-cli"
+          else
+            echo "No se encontró binario en build/bin. Listado de build:"
+            ls -R build || true
+            exit 1
+          fi
 
-          # Copiar a cache (para reusar en corridas futuras)
-          cp -f main build-cache/main
+          # Probar que corre
+          "$BIN" -h | head -n 10 || true
+
+          # Copiar a cache (ruta que usa el script transcribe.mjs)
+          cp -f "$BIN" build-cache/main
 
           # Mostrar qué se generó
           ls -lh build-cache
@@ -92,7 +103,11 @@ jobs:
 
       - name: Install Node deps (repo)
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm i --no-fund --no-audit; fi
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm i --no-fund --no-audit
+          fi
 
       - name: Run transcription (batch 20, lang=es, mark bad)
         env:
