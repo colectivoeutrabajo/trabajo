@@ -4,11 +4,11 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 const MAX_SECONDS = 30;
 const EMOJI_INTERVAL_MS = 2000;
-const MIN_REC_MS = 650;                         // evita blobs vacíos por taps ultracortos
-const HOLD_THRESHOLD_MS = 250;                  // ≥ esto = hold (soltar detiene)
+const MIN_REC_MS = 650;                          // evita blobs vacíos por taps ultracortos
+const HOLD_THRESHOLD_MS = 550;                   // ↑ umbral: tap normal ≠ hold
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-const TAIL_PAD_MS        = isIOS() ? 350 : 150; // “colita” antes de stop (iOS corta pero no se siente largo)
-const STOP_FLUSH_WAIT_MS = isIOS() ? 300 : 150; // espera para último chunk tras stop
+const TAIL_PAD_MS        = isIOS() ? 350 : 150;  // colita breve al soltar
+const STOP_FLUSH_WAIT_MS = isIOS() ? 300 : 150;  // espera para último chunk
 const FORCE_NEW_STREAM_EVERY_TIME = true;
 
 /***** SUPABASE *****/
@@ -86,7 +86,7 @@ async function initRecordPage(){
   let startTs=0, durationMs=0, blob=null, mimeType=pickSupportedMime();
   let stopTimer=null, counterInt=null;
   let state='idle'; // idle | starting | recording | stopping | preview
-  let downAt=0, startedByThisDown=false; // para distinguir tap vs hold
+  let downAt=0, startedByThisDown=false;
 
   const updateCounter=()=>{ if(state!=='recording') return;
     const secs=Math.min(MAX_SECONDS, Math.floor((Date.now()-startTs)/1000));
@@ -115,36 +115,44 @@ async function initRecordPage(){
     if(state!=='idle' && state!=='preview') return false;
     state='starting';
 
+    // UI feedback INMEDIATO (se pone rojo ya)
+    recordBtn.setAttribute('aria-pressed','true');
+    recordBtn.classList.add('btn-recording','is-pressed');
+    recordBtnText.textContent='Grabando…';
+    stopEmojiLoop();
+
+    // stream fresco (si ya concedido, no vuelve a preguntar)
     if (FORCE_NEW_STREAM_EVERY_TIME){ releaseStream(); }
     if(!stream){
       stream=await acquireStreamFresh();
-      if(!stream){ state='idle'; return false; }
+      if(!stream){ // revertir UI si falló
+        recordBtn.setAttribute('aria-pressed','false');
+        recordBtn.classList.remove('btn-recording','is-pressed');
+        recordBtnText.textContent='Grabar';
+        startEmojiLoop();
+        state='idle';
+        return false;
+      }
     }
 
     chunks=[]; blob=null;
-
     try{ mediaRecorder=new MediaRecorder(stream,{mimeType}); }
     catch(_){ mediaRecorder=new MediaRecorder(stream); mimeType=mediaRecorder.mimeType||mimeType; }
 
     mediaRecorder.addEventListener('dataavailable',(e)=>{ if(e.data && e.data.size>0){ chunks.push(e.data); } });
 
     if (isIOS()){
-      mediaRecorder.start(); // single-blob (un solo dataavailable al parar)
+      mediaRecorder.start(); // single-blob
     } else {
-      mediaRecorder.start(250); // chunks periódicos
+      mediaRecorder.start(250); // time-slice
       mediaRecorder.addEventListener('start',()=>{ try{ setTimeout(()=>mediaRecorder.requestData(),200); }catch(_){ } });
       setTimeout(()=>{ try{ mediaRecorder.requestData(); }catch(_){ } },800);
     }
 
-    // UI
     startTs=Date.now();
-    recordBtn.setAttribute('aria-pressed','true');
-    recordBtn.classList.add('btn-recording');
-    recordBtnText.textContent='Grabando…';
-    stopEmojiLoop(); state='recording';
-
+    state='recording';
     counterInt = setInterval(updateCounter, 200);
-    stopTimer = setTimeout(()=> stopRecording(true), MAX_SECONDS*1000);
+    stopTimer  = setTimeout(()=> stopRecording(true), MAX_SECONDS*1000);
     return true;
   }
 
@@ -194,16 +202,16 @@ async function initRecordPage(){
   // ---- GESTOS: dual ----
   recordBtn.addEventListener('contextmenu', e=> e.preventDefault());
 
-  // pointerdown: si está idle → empieza y marcamos “startedByThisDown”
   recordBtn.addEventListener('pointerdown', async (e)=>{
     e.preventDefault();
     try{ e.target.setPointerCapture(e.pointerId); }catch(_){}
     downAt = Date.now();
-    recordBtn.classList.add('is-pressed');
-
     startedByThisDown = (state==='idle' || state==='preview');
     if (startedByThisDown){
-      await startRecording(); // inicio inmediato para capturar bien el principio
+      await startRecording(); // inicio inmediato (captura bien el principio y da feedback visual enseguida)
+    } else {
+      // si ya estaba grabando, solo marcamos visual “presionado”
+      recordBtn.classList.add('is-pressed');
     }
   });
 
@@ -218,17 +226,16 @@ async function initRecordPage(){
     const held = Date.now() - downAt;
 
     if (startedByThisDown){
-      // Caso HOLD: si mantuvo ≥ umbral, soltar = detener; si fue tap (< umbral), sigue grabando (toggle)
+      // HOLD: si mantuvo ≥ umbral → soltar detiene; si fue tap (< umbral) → sigue grabando (toggle)
       if (held >= HOLD_THRESHOLD_MS){
         if (state==='starting'){ await waitForRecording(); }
         if (state==='recording'){ await stopRecording(false); }
       }
-      // else: fue tap corto → sigue grabando; detendrá con otro tap o con hold posterior
       startedByThisDown=false;
       return;
     }
 
-    // Llegamos aquí si ya estaba grabando antes de presionar (toggle para detener)
+    // Estaba grabando antes de este press → tratar como toggle (soltar detiene)
     if (state==='starting'){ await waitForRecording(); }
     if (state==='recording'){ await stopRecording(false); }
   }
@@ -237,11 +244,13 @@ async function initRecordPage(){
   recordBtn.addEventListener('pointercancel', async e=>{ e.preventDefault(); await finishPress(); });
   recordBtn.addEventListener('pointerleave',  async e=>{ e.preventDefault(); await finishPress(); });
 
-  // “Grabar de nuevo” — reset limpio
+  // Grabar de nuevo
   $('#redoBtn')?.addEventListener('click',()=>{
     try{ mediaRecorder && mediaRecorder.state==='recording' && mediaRecorder.stop(); }catch(_){}
     releaseStream();
-    recordBtn.classList.remove('hidden','is-pressed');
+    recordBtn.classList.remove('hidden','is-pressed','btn-recording');
+    recordBtn.setAttribute('aria-pressed','false');
+    recordBtnText.textContent='Grabar';
     resetUI();
   });
 
