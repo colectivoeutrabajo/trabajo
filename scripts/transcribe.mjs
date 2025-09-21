@@ -19,8 +19,9 @@ const {
   MARK_BAD = 'true',
   DRY_RUN = 'false',
   TRANSCRIPT_COLUMN = 'transcript',
-  WHISPER_BIN = './whisper.cpp/build-cache/main',
+  WHISPER_BIN = './whisper.cpp/build/bin/main',
   WHISPER_MODEL = './whisper.cpp/models/ggml-small.bin',
+  LD_LIBRARY_PATH = '',
 } = process.env;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
@@ -69,7 +70,7 @@ async function fetchBroken() {
 }
 
 async function fetchCandidates(limit=30) {
-  // OJO: no filtramos por size/duration aquí; los tratamos aparte para no excluir por error
+  // No filtramos size/duration aquí; tratamos "rotos" aparte para no excluir por error
   let q = sb.from(SUPABASE_TABLE)
     .select(`id,file_path,mime_type,size_bytes,duration_seconds,approved,${TRANSCRIPT_COLUMN},created_at`)
     .eq('approved', true)
@@ -94,7 +95,12 @@ async function downloadToTemp(storagePath) {
 
 async function toWav16kMono(inFile) {
   const outFile = inFile.replace(path.extname(inFile), '.wav');
-  await exec('ffmpeg', ['-y', '-i', inFile, '-ac', '1', '-ar', '16000', '-vn', outFile]);
+  await exec('ffmpeg', ['-y', '-v', 'error', '-i', inFile, '-ac', '1', '-ar', '16000', '-vn', outFile]);
+  // Verificar que el WAV existe y tiene tamaño > 0
+  const st = await fs.stat(outFile);
+  if (!st || st.size <= 44) { // header-only ~44 bytes
+    throw new Error(`WAV inválido o vacío (${outFile}, size=${st?.size||0})`);
+  }
   return outFile;
 }
 
@@ -108,7 +114,17 @@ async function whisperTranscribe(wavFile, lang='es') {
     '-of', outPrefix,
     '-np', '1',
   ];
-  await exec(WHISPER_BIN, args, { timeout: 120000 });
+  console.log('   Ejecutando:', WHISPER_BIN, args.join(' '));
+  try {
+    await exec(WHISPER_BIN, args, {
+      timeout: 180000, // 3 min por archivo (sobra para 30s)
+      env: { ...process.env, LD_LIBRARY_PATH }
+    });
+  } catch (e) {
+    console.error('   Whisper stderr:\n', e?.stderr || '(sin stderr)');
+    console.error('   Whisper stdout:\n', e?.stdout || '(sin stdout)');
+    throw new Error(e?.message || e);
+  }
   const txtPath = `${outPrefix}.txt`;
   const txt = await fs.readFile(txtPath, 'utf8').catch(()=> '');
   return (txt || '').trim();
@@ -138,9 +154,19 @@ async function verifyUpdated(row) {
   return got;
 }
 
+async function preflight() {
+  // Verificar binario y modelo
+  const binOk = await fs.stat(WHISPER_BIN).then(()=>true).catch(()=>false);
+  const mdlOk = await fs.stat(WHISPER_MODEL).then(()=>true).catch(()=>false);
+  if (!binOk) throw new Error(`No existe WHISPER_BIN en ruta: ${WHISPER_BIN}`);
+  if (!mdlOk) throw new Error(`No existe WHISPER_MODEL en ruta: ${WHISPER_MODEL}`);
+  console.log('Preflight OK. BIN y MODEL presentes.');
+}
+
 async function run() {
   console.log(`=== STT nocturno con whisper.cpp (small, ${LANGUAGE}) ===`);
   console.log(`Tabla=${SUPABASE_TABLE} Bucket=${SUPABASE_BUCKET} Lote=${BATCH_LIMIT} Columna=${TRANSCRIPT_COLUMN}`);
+  await preflight();
 
   // 1) Marcar rotos (si procede)
   if (markBad) {
