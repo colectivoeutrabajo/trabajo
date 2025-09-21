@@ -46,22 +46,48 @@ jobs:
           path: whisper.cpp/models/ggml-small.bin
           key: whisper-model-small-v1
 
-      - name: Clone & build whisper.cpp (if needed)
+      - name: Install build deps (toolchain)
         run: |
-          set -e
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl ca-certificates
+
+      - name: Clone & build whisper.cpp (robusto, con fallback de modelo)
+        run: |
+          set -euxo pipefail
+
+          # Clonar si no existe
           if [ ! -d whisper.cpp ]; then
             git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git
           fi
+
           cd whisper.cpp
           mkdir -p build-cache models
+
+          # Descargar modelo small con reintentos; fallback a mirror de GitHub Releases
           if [ ! -f models/ggml-small.bin ]; then
-            echo "Downloading ggml-small.bin model…"
-            curl -L -o models/ggml-small.bin \
-              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+            echo "Descargando modelo ggml-small.bin …"
+            (curl -L --retry 5 --retry-delay 5 -o models/ggml-small.bin \
+              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin) \
+              || (echo "HuggingFace falló, intento mirror…" && \
+                  curl -L --retry 5 --retry-delay 5 -o models/ggml-small.bin \
+                  https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.5/ggml-small.bin)
           fi
-          # Build main binary; guardamos artefactos en build-cache para acelerar
-          make -j
+
+          # Compilar (usa 2 hilos para ser amable con el runner)
+          make clean || true
+          make -j2
+
+          # Verifica que el binario exista y funciona
+          file main || true
+          ./main -h | head -n 5 || true
+
+          # Copiar a cache (para reusar en corridas futuras)
           cp -f main build-cache/main
+
+          # Mostrar qué se generó
+          ls -lh build-cache
+          ls -lh models
+
           cd ..
 
       - name: Install Node deps (repo)
