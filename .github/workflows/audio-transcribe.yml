@@ -1,0 +1,83 @@
+name: Transcribe audio to text (Whisper.cpp, nightly)
+
+on:
+  workflow_dispatch: {}         # permite correrlo manualmente
+  schedule:
+    - cron: "0 4 * * *"         # 04:00 UTC = 22:00 MX Centro
+
+jobs:
+  transcribe:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show env
+        run: |
+          echo "Node/ffmpeg will be installed; whisper.cpp with model 'small' (español)."
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          node -v
+          npm -v
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+      # Cache del binario whisper.cpp (build) y del modelo
+      - name: Cache whisper build
+        id: cache-whisper-build
+        uses: actions/cache@v4
+        with:
+          path: whisper.cpp/build-cache
+          key: whisper-build-${{ runner.os }}-v1
+
+      - name: Cache whisper model
+        id: cache-whisper-model
+        uses: actions/cache@v4
+        with:
+          path: whisper.cpp/models/ggml-small.bin
+          key: whisper-model-small-v1
+
+      - name: Clone & build whisper.cpp (if needed)
+        run: |
+          set -e
+          if [ ! -d whisper.cpp ]; then
+            git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git
+          fi
+          cd whisper.cpp
+          mkdir -p build-cache models
+          if [ ! -f models/ggml-small.bin ]; then
+            echo "Downloading ggml-small.bin model…"
+            curl -L -o models/ggml-small.bin \
+              https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+          fi
+          # Build main binary; guardamos artefactos en build-cache para acelerar
+          make -j
+          cp -f main build-cache/main
+          cd ..
+
+      - name: Install Node deps (repo)
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm i --no-fund --no-audit; fi
+
+      - name: Run transcription (batch 20, lang=es, mark bad)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: audios
+          SUPABASE_TABLE: recordings
+          BATCH_LIMIT: "20"
+          LANGUAGE: "es"
+          MARK_BAD: "true"
+          DRY_RUN: "false"
+          WHISPER_BIN: "./whisper.cpp/build-cache/main"
+          WHISPER_MODEL: "./whisper.cpp/models/ggml-small.bin"
+        run: node scripts/transcribe.mjs
