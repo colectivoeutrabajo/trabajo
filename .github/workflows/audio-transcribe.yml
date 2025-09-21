@@ -51,16 +51,33 @@ jobs:
           path: whisper.cpp/models/ggml-small.bin
           key: whisper-model-small-v1
 
-      - name: Clone & build whisper.cpp (detecta binario en build/bin)
+      - name: Clone & build whisper.cpp (robusto con rescate de cachés)
         run: |
           set -euxo pipefail
 
+          # Si existe directorio pero NO hay CMakeLists.txt, es un caso de caché "huérfano"
+          if [ -d whisper.cpp ] && [ ! -f whisper.cpp/CMakeLists.txt ]; then
+            echo "Directorio whisper.cpp existe sin fuentes; preservando caches y reclonando…"
+            mkdir -p /tmp/wcache
+            [ -d whisper.cpp/models ] && mv whisper.cpp/models /tmp/wcache/models || true
+            [ -d whisper.cpp/build-cache ] && mv whisper.cpp/build-cache /tmp/wcache/build-cache || true
+            rm -rf whisper.cpp
+          fi
+
+          # Clonar si no existe
           if [ ! -d whisper.cpp ]; then
             git clone --depth=1 https://github.com/ggerganov/whisper.cpp.git
           fi
+
           cd whisper.cpp
+
+          # Restaurar caches si estaban preservados
+          [ -d /tmp/wcache/models ] && mv /tmp/wcache/models ./ || true
+          [ -d /tmp/wcache/build-cache ] && mv /tmp/wcache/build-cache ./ || true
+
           mkdir -p build-cache models
 
+          # Descargar modelo 'small' con reintentos y fallback
           if [ ! -f models/ggml-small.bin ]; then
             echo "Descargando ggml-small.bin …"
             (curl -L --retry 5 --retry-delay 5 -o models/ggml-small.bin \
@@ -70,9 +87,11 @@ jobs:
                   https://github.com/ggerganov/whisper.cpp/releases/download/v1.5.5/ggml-small.bin)
           fi
 
+          # Compilar a ./build
           cmake -B build -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release -j2
 
+          # Detectar binario: build/bin/{main|whisper-cli}
           BIN=""
           if [ -f build/bin/main ]; then
             BIN="build/bin/main"
@@ -84,8 +103,10 @@ jobs:
             exit 1
           fi
 
+          # Probar ayuda y copiar a cache
           "$BIN" -h | head -n 10 || true
           cp -f "$BIN" build-cache/main
+
           ls -lh build-cache
           ls -lh models
           cd ..
@@ -118,7 +139,7 @@ jobs:
           LANGUAGE: "es"
           MARK_BAD: "true"
           DRY_RUN: "false"
-          TRANSCRIPT_COLUMN: "transcript"   # cambia aquí si tu columna se llama distinto
+          TRANSCRIPT_COLUMN: "transcript"
           WHISPER_BIN: "./whisper.cpp/build-cache/main"
           WHISPER_MODEL: "./whisper.cpp/models/ggml-small.bin"
         run: node scripts/transcribe.mjs
