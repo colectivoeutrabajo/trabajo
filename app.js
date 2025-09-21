@@ -10,8 +10,8 @@ const MIN_REC_MS = 650; // evita taps ultracortos
 const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
 
 // Timings por plataforma
-const TAIL_PAD_MS        = isIOS() ? 800 : 300; // cola antes de stop (iOS más larga)
-const STOP_FLUSH_WAIT_MS = isIOS() ? 600  : 180; // espera para último chunk tras stop
+const TAIL_PAD_MS        = isIOS() ? 1200 : 300; // cola antes de stop (iOS más larga)
+const STOP_FLUSH_WAIT_MS = isIOS() ? 300  : 180; // espera para último chunk tras stop
 const FORCE_NEW_STREAM_EVERY_TIME = true;       // stream fresco por intento
 
 /***** SUPABASE *****/
