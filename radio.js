@@ -310,3 +310,19 @@ document.addEventListener('DOMContentLoaded', async ()=>{
   setStatus('Listo. Presiona Play para iniciar.');
   skipBtn.disabled = true;
 });
+
+// Auto-resume si el audio se pausa sin que tú hayas puesto Pause
+let userPaused = false;
+playBtn.addEventListener('click', ()=> { userPaused = !userPaused; });
+
+function tryAutoResume() {
+  if (!userPaused && playing && (audioEl.paused || audioEl.readyState < 2)) {
+    audioEl.play().catch(()=>{/* ignorar; reintentará luego */});
+  }
+}
+['pause','stalled','suspend','waiting','emptied'].forEach(ev=>{
+  audioEl.addEventListener(ev, ()=> setTimeout(tryAutoResume, 500));
+});
+// Reintento periódico por si cambió el dispositivo de salida
+setInterval(tryAutoResume, 10000);
+
