@@ -3,7 +3,8 @@ name: Transcribe audio to text (Whisper.cpp, nightly)
 on:
   workflow_dispatch: {}
   schedule:
-    - cron: "0 4 * * *"   # 04:00 UTC = 22:00 MX Centro
+    # 04:00 UTC = 22:00 México/Monterrey
+    - cron: "0 4 * * *"
 
 jobs:
   transcribe:
@@ -15,7 +16,7 @@ jobs:
 
       - name: Show env
         run: |
-          echo "Node/ffmpeg will be installed; whisper.cpp with model 'small' (español)."
+          echo "Transcripción nocturna con whisper.cpp (small, español)."
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -36,14 +37,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential git curl ca-certificates
 
-      # Cache del binario compilado y del modelo para acelerar corridas futuras
-      - name: Cache whisper build
-        id: cache-whisper-build
-        uses: actions/cache@v4
-        with:
-          path: whisper.cpp/build-cache
-          key: whisper-build-${{ runner.os }}-v1
-
+      # Cache solo del modelo para acelerar corridas
       - name: Cache whisper model
         id: cache-whisper-model
         uses: actions/cache@v4
@@ -57,10 +51,7 @@ jobs:
 
           # Si existe directorio pero NO hay CMakeLists.txt, es un caso de caché "huérfano"
           if [ -d whisper.cpp ] && [ ! -f whisper.cpp/CMakeLists.txt ]; then
-            echo "Directorio whisper.cpp existe sin fuentes; preservando caches y reclonando…"
-            mkdir -p /tmp/wcache
-            [ -d whisper.cpp/models ] && mv whisper.cpp/models /tmp/wcache/models || true
-            [ -d whisper.cpp/build-cache ] && mv whisper.cpp/build-cache /tmp/wcache/build-cache || true
+            echo "Directorio whisper.cpp existe sin fuentes; lo reclono…"
             rm -rf whisper.cpp
           fi
 
@@ -70,12 +61,7 @@ jobs:
           fi
 
           cd whisper.cpp
-
-          # Restaurar caches si estaban preservados
-          [ -d /tmp/wcache/models ] && mv /tmp/wcache/models ./ || true
-          [ -d /tmp/wcache/build-cache ] && mv /tmp/wcache/build-cache ./ || true
-
-          mkdir -p build-cache models
+          mkdir -p models
 
           # Descargar modelo 'small' con reintentos y fallback
           if [ ! -f models/ggml-small.bin ]; then
@@ -92,24 +78,29 @@ jobs:
           cmake --build build --config Release -j2
 
           # Detectar binario: build/bin/{main|whisper-cli}
-          BIN=""
           if [ -f build/bin/main ]; then
-            BIN="build/bin/main"
+            echo "WHISPER_BIN=./whisper.cpp/build/bin/main" >> $GITHUB_ENV
           elif [ -f build/bin/whisper-cli ]; then
-            BIN="build/bin/whisper-cli"
+            echo "WHISPER_BIN=./whisper.cpp/build/bin/whisper-cli" >> $GITHUB_ENV
           else
             echo "No se encontró binario en build/bin. Listado de build:"
             ls -R build || true
             exit 1
           fi
 
-          # Probar ayuda y copiar a cache
-          "$BIN" -h | head -n 10 || true
-          cp -f "$BIN" build-cache/main
+          # Exportar LD_LIBRARY_PATH para que encuentre .so en build y build/bin
+          echo "LD_LIBRARY_PATH=./whisper.cpp/build:./whisper.cpp/build/bin" >> $GITHUB_ENV
+          echo "WHISPER_MODEL=./whisper.cpp/models/ggml-small.bin" >> $GITHUB_ENV
 
-          ls -lh build-cache
-          ls -lh models
-          cd ..
+          # Probar ayuda
+          ${GITHUB_ENV+echo "Vars defined"} || true
+
+      - name: Confirm whisper bin & model
+        run: |
+          echo "WHISPER_BIN=${WHISPER_BIN}"
+          echo "WHISPER_MODEL=${WHISPER_MODEL}"
+          ls -lh "${WHISPER_BIN}" "${WHISPER_MODEL}"
+          "${WHISPER_BIN}" -h | head -n 10 || true
 
       - name: Install Node deps (repo)
         run: |
@@ -140,6 +131,7 @@ jobs:
           MARK_BAD: "true"
           DRY_RUN: "false"
           TRANSCRIPT_COLUMN: "transcript"
-          WHISPER_BIN: "./whisper.cpp/build-cache/main"
-          WHISPER_MODEL: "./whisper.cpp/models/ggml-small.bin"
+          WHISPER_BIN: ${{ env.WHISPER_BIN }}
+          WHISPER_MODEL: ${{ env.WHISPER_MODEL }}
+          LD_LIBRARY_PATH: ${{ env.LD_LIBRARY_PATH }}
         run: node scripts/transcribe.mjs
