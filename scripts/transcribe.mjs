@@ -19,7 +19,7 @@ const {
   MARK_BAD = 'true',
   DRY_RUN = 'false',
   TRANSCRIPT_COLUMN = 'transcript',
-  WHISPER_BIN = './whisper.cpp/build/bin/main',
+  WHISPER_BIN = './whisper.cpp/build/bin/whisper-cli',
   WHISPER_MODEL = './whisper.cpp/models/ggml-small.bin',
   LD_LIBRARY_PATH = '',
 } = process.env;
@@ -70,7 +70,7 @@ async function fetchBroken() {
 }
 
 async function fetchCandidates(limit=30) {
-  // No filtramos size/duration aquí; tratamos "rotos" aparte para no excluir por error
+  // No filtramos size/duration aquí; tratamos "rotos" aparte
   let q = sb.from(SUPABASE_TABLE)
     .select(`id,file_path,mime_type,size_bytes,duration_seconds,approved,${TRANSCRIPT_COLUMN},created_at`)
     .eq('approved', true)
@@ -96,9 +96,8 @@ async function downloadToTemp(storagePath) {
 async function toWav16kMono(inFile) {
   const outFile = inFile.replace(path.extname(inFile), '.wav');
   await exec('ffmpeg', ['-y', '-v', 'error', '-i', inFile, '-ac', '1', '-ar', '16000', '-vn', outFile]);
-  // Verificar que el WAV existe y tiene tamaño > 0
   const st = await fs.stat(outFile);
-  if (!st || st.size <= 44) { // header-only ~44 bytes
+  if (!st || st.size <= 44) {
     throw new Error(`WAV inválido o vacío (${outFile}, size=${st?.size||0})`);
   }
   return outFile;
@@ -117,7 +116,7 @@ async function whisperTranscribe(wavFile, lang='es') {
   console.log('   Ejecutando:', WHISPER_BIN, args.join(' '));
   try {
     await exec(WHISPER_BIN, args, {
-      timeout: 180000, // 3 min por archivo (sobra para 30s)
+      timeout: 180000,
       env: { ...process.env, LD_LIBRARY_PATH }
     });
   } catch (e) {
@@ -155,7 +154,6 @@ async function verifyUpdated(row) {
 }
 
 async function preflight() {
-  // Verificar binario y modelo
   const binOk = await fs.stat(WHISPER_BIN).then(()=>true).catch(()=>false);
   const mdlOk = await fs.stat(WHISPER_MODEL).then(()=>true).catch(()=>false);
   if (!binOk) throw new Error(`No existe WHISPER_BIN en ruta: ${WHISPER_BIN}`);
@@ -168,7 +166,6 @@ async function run() {
   console.log(`Tabla=${SUPABASE_TABLE} Bucket=${SUPABASE_BUCKET} Lote=${BATCH_LIMIT} Columna=${TRANSCRIPT_COLUMN}`);
   await preflight();
 
-  // 1) Marcar rotos (si procede)
   if (markBad) {
     const broken = await fetchBroken();
     const trulyBroken = (broken || []).filter(isBroken);
@@ -176,7 +173,6 @@ async function run() {
     console.log(`Rotos detectados y marcados: ${trulyBroken.length}`);
   }
 
-  // 2) Tomar candidatos transcript=NULL
   const batch = await fetchCandidates(parseInt(BATCH_LIMIT,10));
   console.log(`Candidatos transcript=NULL: ${batch.length}`);
   batch.slice(0,10).forEach((r,i)=>{
@@ -184,11 +180,9 @@ async function run() {
   });
   if (!batch.length) { console.log('Nada que transcribir.'); return; }
 
-  // 3) Procesar uno a uno
   for (const row of batch) {
     console.log(`\n→ ${row.file_path}`);
     try {
-      // si está roto, saltar y marcar (por si vino por nulos históricos)
       if (isBroken(row)) {
         console.warn('   Archivo roto (bytes<=1024 o dur<=0). Marcando y saltando.');
         if (markBad && !isDry) await markAsBad([row]);
@@ -207,11 +201,9 @@ async function run() {
 
       await updateTranscript(row, text);
 
-      // Verificar que ya no está NULL
       const got = await verifyUpdated(row);
       console.log(`   Verificación post-update: ${TRANSCRIPT_COLUMN} = ${got === null ? 'NULL' : (got ? `"${String(got).slice(0,40)}..."` : '"" (vacío)')}`);
 
-      // limpieza
       try { await fs.rm(dir, { recursive: true, force: true }); } catch {}
     } catch (e) {
       console.error('   ✗ Error:', e?.message || e);
