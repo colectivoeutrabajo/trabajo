@@ -342,5 +342,322 @@ function initListenPage(){
   }
 
   (async()=>{ await loadSixReplace(); })();
+
+/* ==== PATCH: Control de grabación dual (tap-toggle + hold-to-record) ==== */
+/* Este bloque puede ir al FINAL de app.js. Si ya tienes lógica de grabación,
+   este patch la sustituye: "rearma" el botón #recordBtn con un manejador robusto
+   que soporta AMBOS modos sin cortes a ~1s ni latencias en iPhone. */
+
+(function(){
+  const $ = (sel, root=document) => root.querySelector(sel);
+
+  const btn = $('#recordBtn');
+  if (!btn) return; // no estamos en la pantalla de grabación
+
+  // Elementos opcionales que ya tienes
+  const counterEl = $('#counter');
+  const previewWrap = $('#preview');
+  const player = $('#player');
+  const sendBtn = $('#sendBtn');
+  const recordAgainBtn = $('#recordAgainBtn');
+  const consentNote = $('#consentNote'); // leyenda de consentimiento (solo en preview)
+
+  // Flags/estado
+  let stream = null;
+  let mediaRecorder = null;
+  let chunks = [];
+  let blob = null;
+  let isRecording = false;
+  let gestureMode = null;   // 'toggle' | 'hold' | null
+  let pointerDownAt = 0;
+  let pointerIsDown = false;
+  let holdTimer = null;
+  let ignoreNextPointerUp = false;
+  let maxTimer = null;
+  let startTs = 0;
+
+  // Ajustes (respetan los que ya tengas definidos globalmente)
+  const MAX_SECONDS = (typeof window.MAX_SECONDS === 'number') ? window.MAX_SECONDS : 30;
+  const HOLD_THRESHOLD_MS = (typeof window.HOLD_THRESHOLD_MS === 'number') ? window.HOLD_THRESHOLD_MS : 500;
+  const MIN_REC_MS = (typeof window.MIN_REC_MS === 'number') ? window.MIN_REC_MS : 500;
+  const STOP_FLUSH_WAIT_MS = (typeof window.STOP_FLUSH_WAIT_MS === 'number') ? window.STOP_FLUSH_WAIT_MS : (isIOS() ? 300 : 150);
+
+  // UX: asegurar que el botón no seleccione texto ni dispare gestos extraños
+  btn.style.touchAction = 'manipulation';
+  btn.style.webkitUserSelect = 'none';
+  btn.style.userSelect = 'none';
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+
+  function isIOS(){
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  }
+
+  function canType(type){
+    return (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(type));
+  }
+  function pickMime(){
+    // Safari/iOS → m4a/mp4; Chrome/Android → webm/opus
+    const prefer = [
+      'audio/mp4;codecs=mp4a.40.2',
+      'audio/mp4',
+      'audio/aac',
+      'audio/webm;codecs=opus',
+      'audio/webm'
+    ];
+    for (const t of prefer) if (canType(t)) return t;
+    return ''; // dejar que el navegador escoja por defecto
+  }
+
+  function hhmmss(ms){
+    const s = Math.max(0, Math.floor(ms/1000));
+    const m = Math.floor(s/60);
+    const r = s%60;
+    const pad = (n) => String(n).padStart(2,'0');
+    return `${pad(m)}:${pad(r)}`;
+  }
+
+  function setBtnState(state){
+    // 'idle' | 'starting' | 'recording' | 'stopping' | 'preview'
+    btn.dataset.state = state;
+    if (state === 'recording') {
+      btn.classList.add('is-recording');
+      btn.setAttribute('aria-pressed','true');
+      if (btn.querySelector('.label')) btn.querySelector('.label').textContent = 'GRABANDO…';
+    } else {
+      btn.classList.remove('is-recording');
+      btn.setAttribute('aria-pressed','false');
+      if (btn.querySelector('.label')) btn.querySelector('.label').textContent = 'GRABAR';
+    }
+    // Leyenda de consentimiento solo en PREVIEW
+    if (consentNote) {
+      if (state === 'preview') consentNote.classList.remove('hidden');
+      else consentNote.classList.add('hidden');
+    }
+  }
+
+  function updateCounter(){
+    if (!counterEl) return;
+    const elapsed = isRecording ? (Date.now() - startTs) : 0;
+    const left = Math.max(0, MAX_SECONDS*1000 - elapsed);
+    counterEl.textContent = `00/${String(MAX_SECONDS).padStart(2,'0')}`;
+    // Si quieres mostrar avance: counterEl.textContent = `${hhmmss(elapsed)}/${hhmmss(MAX_SECONDS*1000)}`;
+  }
+
+  function tickCounter(){
+    updateCounter();
+    if (isRecording) requestAnimationFrame(tickCounter);
+  }
+
+  async function ensureStream(){
+    if (stream && stream.active) return stream;
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    return stream;
+  }
+
+  function cleanupStream(){
+    if (stream) {
+      for (const tr of stream.getTracks()) try { tr.stop(); } catch {}
+      stream = null;
+    }
+  }
+
+  async function startRecording(){
+    if (isRecording) return;
+    setBtnState('starting');
+    try {
+      const st = await ensureStream();
+      chunks = [];
+      const mime = pickMime();
+      mediaRecorder = mime ? new MediaRecorder(st, { mimeType: mime }) : new MediaRecorder(st);
+      mediaRecorder.addEventListener('dataavailable', e => {
+        if (e.data && e.data.size > 0) chunks.push(e.data);
+      });
+      mediaRecorder.addEventListener('stop', () => {
+        blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/mp4' });
+      }, { once:true });
+
+      mediaRecorder.start(100); // timeslice corto para flush periódico
+      startTs = Date.now();
+      isRecording = true;
+      setBtnState('recording');
+      requestAnimationFrame(tickCounter);
+
+      // límite duro
+      clearTimeout(maxTimer);
+      maxTimer = setTimeout(()=> stopRecording(), MAX_SECONDS*1000);
+
+      // Pausar animaciones/emoji si tu UI tiene un loop global:
+      document.documentElement.classList.add('rec-on');
+    } catch (err) {
+      console.error('No se pudo iniciar grabación:', err);
+      setBtnState('idle');
+    }
+  }
+
+  async function stopRecording(){
+    if (!isRecording) return;
+    setBtnState('stopping');
+    try {
+      // Asegurar duración mínima para evitar blobs vacíos
+      const elapsed = Date.now() - startTs;
+      if (elapsed < MIN_REC_MS) {
+        await new Promise(r => setTimeout(r, MIN_REC_MS - elapsed));
+      }
+      // Parar recorder + esperar flush
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        const pStop = new Promise(r => mediaRecorder.addEventListener('stop', r, { once:true }));
+        mediaRecorder.stop();
+        await Promise.race([pStop, new Promise(r=>setTimeout(r, STOP_FLUSH_WAIT_MS))]);
+      }
+      cleanupStream();
+      isRecording = false;
+      clearTimeout(maxTimer);
+
+      // Construir blob final si no lo hizo el 'stop'
+      if (!blob || blob.size === 0) {
+        if (chunks.length) blob = new Blob(chunks, { type: chunks[0]?.type || 'audio/mp4' });
+      }
+
+      // Mostrar preview si existen elementos
+      if (player && blob && blob.size) {
+        player.src = URL.createObjectURL(blob);
+        player.load();
+      }
+      if (previewWrap) previewWrap.classList.remove('hidden');
+      // Ocultar botón de grabar si así lo definiste en tu flujo
+      // btn.classList.add('hidden');
+
+      setBtnState('preview');
+      document.documentElement.classList.remove('rec-on');
+
+    } catch (err) {
+      console.error('Error al detener grabación:', err);
+      setBtnState('idle');
+      document.documentElement.classList.remove('rec-on');
+    } finally {
+      // Reset gestos
+      gestureMode = null;
+      pointerIsDown = false;
+      ignoreNextPointerUp = false;
+      clearTimeout(holdTimer);
+    }
+  }
+
+  function resetToIdle(){
+    // Limpia preview y vuelve a mostrar botón
+    if (player) { try { player.pause(); URL.revokeObjectURL(player.src); } catch {} player.removeAttribute('src'); }
+    if (previewWrap) previewWrap.classList.add('hidden');
+    // btn.classList.remove('hidden');
+    blob = null; chunks = [];
+    setBtnState('idle');
+    updateCounter();
+  }
+
+  // Reemplazar listeners antiguos por nuevos sin duplicar
+  const freshBtn = btn.cloneNode(true);
+  btn.parentNode.replaceChild(freshBtn, btn);
+  const target = freshBtn;
+
+  function onPointerDown(e){
+    e.preventDefault();
+    e.stopPropagation();
+    target.setPointerCapture?.(e.pointerId);
+    pointerIsDown = true;
+    pointerDownAt = Date.now();
+
+    if (!isRecording) {
+      // Arrancamos de inmediato para no perder el inicio del audio
+      startRecording().then(()=>{
+        gestureMode = 'undecided'; // decidimos en función del tiempo presionado
+        // Si transcurre más que el umbral, lo tratamos como HOLD
+        holdTimer = setTimeout(()=>{
+          if (pointerIsDown && isRecording && gestureMode === 'undecided') {
+            gestureMode = 'hold';
+          }
+        }, HOLD_THRESHOLD_MS);
+      });
+    } else {
+      // Ya estamos grabando
+      if (gestureMode === 'toggle' || gestureMode === 'undecided') {
+        // Segundo tap: detenemos en pointerdown (más responsivo y evita corte a ~1s)
+        ignoreNextPointerUp = true;
+        stopRecording();
+      }
+      // Si era 'hold', no hacemos nada aquí; se detendrá en pointerup
+    }
+  }
+
+  function onPointerUp(e){
+    if (ignoreNextPointerUp) {
+      ignoreNextPointerUp = false;
+      pointerIsDown = false;
+      clearTimeout(holdTimer);
+      return;
+    }
+    pointerIsDown = false;
+    clearTimeout(holdTimer);
+
+    if (!isRecording) return;
+
+    const pressedMs = Date.now() - pointerDownAt;
+
+    if (gestureMode === 'undecided') {
+      // Fue un tap corto: clasificamos como TOGGLE y NO detenemos aquí.
+      if (pressedMs < HOLD_THRESHOLD_MS) {
+        gestureMode = 'toggle';
+        // queda grabando hasta el próximo tap (que detiene en pointerdown)
+        return;
+      } else {
+        // por si el timer no alcanzó, tratar como hold
+        gestureMode = 'hold';
+      }
+    }
+
+    if (gestureMode === 'hold') {
+      // Soltar = detener
+      stopRecording();
+    }
+    // Si es 'toggle', no se detiene aquí (se detiene en el próximo pointerdown)
+  }
+
+  function onPointerLeave(e){
+    // En HOLD, salir del botón debe detener (similar a WhatsApp)
+    if (pointerIsDown && isRecording && gestureMode === 'hold') {
+      stopRecording();
+    }
+    pointerIsDown = false;
+    clearTimeout(holdTimer);
+  }
+
+  function onPointerCancel(e){
+    if (pointerIsDown && isRecording && gestureMode === 'hold') {
+      stopRecording();
+    }
+    pointerIsDown = false;
+    clearTimeout(holdTimer);
+  }
+
+  target.addEventListener('pointerdown', onPointerDown, { passive:false });
+  target.addEventListener('pointerup', onPointerUp, { passive:false });
+  target.addEventListener('pointerleave', onPointerLeave, { passive:true });
+  target.addEventListener('pointercancel', onPointerCancel, { passive:true });
+  // Ignorar click sintético (evita dobles paradas)
+  target.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); }, { capture:true });
+
+  // Botón "Grabar de nuevo"
+  if (recordAgainBtn) {
+    recordAgainBtn.addEventListener('click', (e)=>{
+      e.preventDefault();
+      if (isRecording) stopRecording();
+      resetToIdle();
+    });
+  }
+
+  // Inicializar UI
+  setBtnState('idle');
+  updateCounter();
+
+})();
+
   moreBtn.addEventListener('click', async()=>{ await loadSixReplace(); });
 }
