@@ -1,6 +1,7 @@
 // Config
-const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co'; // <-- tu URL
-const SUPABASE_ANON_KEY = 'REEMPLAZA_CON_TU_ANON_KEY';            // <-- tu anon
+const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
+
 const BUCKET = 'audios';
 const PREFIX = 'recordings';     // carpeta donde guardas los audios
 const PAGE_SIZE = 50;
