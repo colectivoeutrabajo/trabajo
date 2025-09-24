@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Admin · Depurar Storage</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <link rel="stylesheet" href="./admin.css">
+</head>
+<body data-page="admin">
+  <header class="topbar">
+    <h1>Administración de audios</h1>
+    <div id="usageBox" class="usage">
+      <div><strong>Storage usado:</strong> <span id="usedHuman">—</span> / <span id="quotaHuman">—</span></div>
+      <div class="bar"><span id="usedBar" style="width:0%"></span></div>
+      <div class="muted" id="usageNote">medido directamente en Storage (bucket <code>audios/recordings</code>)</div>
+    </div>
+    <div class="admin-key">
+      <label>Admin Key:
+        <input type="password" id="adminKeyInput" placeholder="x-admin-key" />
+      </label>
+      <button id="saveAdminKey">Guardar</button>
+    </div>
+  </header>
+
+  <section class="filters">
+    <div class="row">
+      <label>Buscar:
+        <input type="text" id="q" placeholder="file_path o transcript contiene…" />
+      </label>
+      <label>Approved:
+        <select id="approved">
+          <option value="true">Solo true</option>
+          <option value="false">Solo false</option>
+          <option value="all">Todos</option>
+        </select>
+      </label>
+      <label>Transcript:
+        <select id="transcript">
+          <option value="all">Todos</option>
+          <option value="nonnull">Solo con texto</option>
+          <option value="null">Solo NULL</option>
+        </select>
+      </label>
+      <label>MIME:
+        <select id="mime">
+          <option value="all">Todos</option>
+          <option value="mp4">mp4/m4a</option>
+          <option value="webm">webm</option>
+        </select>
+      </label>
+      <label>Desde:
+        <input type="date" id="fromDate">
+      </label>
+      <label>Hasta:
+        <input type="date" id="toDate">
+      </label>
+    </div>
+    <div class="row">
+      <label>Duración ≥ (s):
+        <input type="number" id="minDur" min="0" step="1" placeholder="0">
+      </label>
+      <label>Tamaño ≥ (KB):
+        <input type="number" id="minKB" min="0" step="1" placeholder="0">
+      </label>
+      <label>Orden:
+        <select id="orderBy">
+          <option value="created_at.desc">Fecha ↓</option>
+          <option value="created_at.asc">Fecha ↑</option>
+          <option value="size_bytes.desc">Tamaño ↓</option>
+          <option value="size_bytes.asc">Tamaño ↑</option>
+          <option value="duration_seconds.desc">Duración ↓</option>
+          <option value="duration_seconds.asc">Duración ↑</option>
+        </select>
+      </label>
+      <button id="applyFilters">Aplicar filtros</button>
+      <button id="resetFilters" class="ghost">Reset</button>
+    </div>
+  </section>
+
+  <section class="actions">
+    <div>
+      <button id="refresh">Recargar</button>
+      <button id="selectPage">Seleccionar página</button>
+      <button id="clearSel" class="ghost">Limpiar selección</button>
+    </div>
+    <div class="spacer"></div>
+    <div>
+      <button id="dryRun" title="Suma tamaño de los seleccionados (no borra)">Dry-run</button>
+      <button id="downloadLinks" title="Signed URLs 10 min">Descargar (links)</button>
+      <button id="archiveOnly" class="warn">Solo approved=false</button>
+      <button id="deleteAndDisapprove" class="danger">Borrar Storage + approved=false</button>
+    </div>
+  </section>
+
+  <section class="tableWrap">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>Fecha</th>
+          <th>Dur</th>
+          <th>Tamaño</th>
+          <th>MIME</th>
+          <th>Approved</th>
+          <th>Transcript</th>
+          <th>Ciudad</th>
+          <th>file_path</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="empty hidden">Sin resultados.</div>
+  </section>
+
+  <section class="pager">
+    <button id="prev">← Anterior</button>
+    <span id="pageInfo"></span>
+    <button id="next">Siguiente →</button>
+  </section>
+
+  <section id="resultBox" class="result hidden"></section>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="./admin.js"></script>
+</body>
+</html>
