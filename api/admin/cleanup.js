@@ -1,11 +1,11 @@
-// api/admin/cleanup.js
-// CommonJS para Vercel Node
-const { createClient } = require('@supabase/supabase-js');
+// ESM: funciona con "type": "module" en tu package.json
+import { createClient } from '@supabase/supabase-js';
 
-function json(res, code, data){ res.status(code).setHeader('content-type','application/json').end(JSON.stringify(data)); }
+function json(res, code, data) {
+  res.status(code).setHeader('content-type','application/json').end(JSON.stringify(data));
+}
 function bad(res, msg){ json(res, 400, { error: msg }); }
 function auth(req){ return req.headers['x-admin-key'] && req.headers['x-admin-key'] === process.env.ADMIN_KEY; }
-
 function humanBytes(n){
   if (n == null) return '—';
   const units = ['B','KB','MB','GB','TB']; let i=0, v=Number(n);
@@ -14,19 +14,24 @@ function humanBytes(n){
 }
 
 async function listAllFiles(storage, bucket, prefix){
-  // Lista plana en prefix; si no usas subcarpetas adicionales, basta con paginar
   const LIMIT = 1000;
   let offset = 0, all = [];
   for(;;){
-    const { data, error } = await storage.from(bucket).list(prefix, { limit: LIMIT, offset, sortBy: { column: 'name', order: 'asc' } });
+    const { data, error } = await storage.from(bucket).list(prefix, {
+      limit: LIMIT, offset, sortBy: { column: 'name', order: 'asc' }
+    });
     if (error) throw error;
     if (!data || data.length === 0) break;
-    // Filtramos a solo archivos (sin "carpetas")
-    for(const it of data){
-      if (it.id || it.name){ // entradas de archivos traen .id en v2
-        if (!it.metadata || it.metadata.isDirectory !== true){
-          all.push({ name: it.name, id: it.id, size: it.metadata?.size ?? it.size ?? 0, updated_at: it.updated_at || null });
-        }
+    for (const it of data) {
+      // filtra "carpetas"
+      const isDir = it?.metadata?.isDirectory === true || it?.id == null && !it?.name?.includes('.');
+      if (!isDir) {
+        all.push({
+          name: it.name,
+          id: it.id,
+          size: it.metadata?.size ?? it.size ?? 0,
+          updated_at: it.updated_at || null
+        });
       }
     }
     if (data.length < LIMIT) break;
@@ -35,8 +40,8 @@ async function listAllFiles(storage, bucket, prefix){
   return all;
 }
 
-module.exports = async (req, res) => {
-  // Preflight CORS sencillo (si lo abres desde tu dominio)
+export default async function handler(req, res){
+  // CORS simple
   if (req.method === 'OPTIONS'){
     res.setHeader('access-control-allow-origin', '*');
     res.setHeader('access-control-allow-headers', 'content-type,x-admin-key');
@@ -51,19 +56,22 @@ module.exports = async (req, res) => {
   const SERVICE_KEY  = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if(!SUPABASE_URL || !SERVICE_KEY) return bad(res, 'Missing service credentials');
 
-  const quotaBytes = Number(process.env.STORAGE_QUOTA_BYTES || 0) || (1 * 1024 * 1024 * 1024); // 1GB por defecto
+  const quotaBytes = Number(process.env.STORAGE_QUOTA_BYTES || 0) || (1 * 1024 * 1024 * 1024); // 1GB por default
   const supa = createClient(SUPABASE_URL, SERVICE_KEY);
 
   if (req.method === 'GET'){
-    // ?op=usage  — calcula uso real del bucket/prefijo
-    const op = (req.query.op || '').toString();
+    const op = String(req.query?.op || '');
     if (op === 'usage'){
       try{
         const bucket = 'audios';
         const prefix = 'recordings';
         const files = await listAllFiles(supa.storage, bucket, prefix);
         const used = files.reduce((a,f)=> a + (Number(f.size)||0), 0);
-        return json(res, 200, { bucket, prefix, usedBytes: used, quotaBytes, human: { used: humanBytes(used), quota: humanBytes(quotaBytes) }, count: files.length });
+        return json(res, 200, {
+          bucket, prefix, usedBytes: used, quotaBytes,
+          human: { used: humanBytes(used), quota: humanBytes(quotaBytes) },
+          count: files.length
+        });
       }catch(e){
         return json(res, 500, { error: e.message || String(e) });
       }
@@ -74,8 +82,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return bad(res, 'Method not allowed');
 
   let body = {};
-  try{ body = req.body || {}; }catch(_){}
-
+  try { body = req.body || {}; } catch {}
   const action = body.action;
   if (!action) return bad(res, 'Missing action');
 
@@ -111,7 +118,7 @@ module.exports = async (req, res) => {
     if (ids.length === 0 || file_paths.length === 0) return bad(res, 'Need ids & file_paths');
 
     try{
-      // medir bytes desde DB para reporte
+      // bytes estimados (para reporte)
       const { data: rows, error: qErr } = await supa
         .from('recordings')
         .select('id, size_bytes')
@@ -127,7 +134,6 @@ module.exports = async (req, res) => {
       const { error: updErr } = await supa.from('recordings').update({ approved: false }).in('id', ids);
       if (updErr) throw updErr;
 
-      // respuesta
       return json(res, 200, {
         deleted: delRes?.length || 0,
         updated: ids.length,
@@ -140,4 +146,4 @@ module.exports = async (req, res) => {
   }
 
   return bad(res, 'Unknown action');
-};
+}
