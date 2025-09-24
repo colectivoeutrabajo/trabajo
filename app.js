@@ -98,6 +98,46 @@ async function initRecordPage(){
     counter.textContent=`0:${s(secs)} / 0:${s(MAX_SECONDS)}`;
   };
 
+    // === PREWARM: pedir micrófono al abrir (y reusar el stream) ===
+  let prewarmed = false; // evita pedirlo dos veces
+
+  async function prewarmMicAtLoad() {
+    if (prewarmed) return;
+    prewarmed = true;
+    try {
+      // 1) Si el permiso ya está concedido, abre el stream y déjalo listo
+      if (navigator.permissions?.query) {
+        try {
+          const st = await navigator.permissions.query({ name: 'microphone' });
+          if (st.state === 'granted') {
+            // usa las variables 'stream' ya definidas en initRecordPage
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            return;
+          }
+        } catch (_) { /* Safari puede no soportar bien permissions */ }
+      }
+
+      // 2) Intenta pedirlo inmediatamente al cargar
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      // Si llega aquí, ya no habrá prompt al tocar el botón
+    } catch (e) {
+      // 3) Fallback iOS/UA: algunos requieren un gesto del usuario.
+      //    Pídelo en el PRIMER toque en cualquier parte (no en el botón).
+      const firstTouchAsk = async () => {
+        document.removeEventListener('pointerdown', firstTouchAsk, true);
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        } catch (_) {
+          // Si aún falla, el permiso será pedido al tocar "Grabar" como último recurso
+        }
+      };
+      document.addEventListener('pointerdown', firstTouchAsk, true);
+    }
+  }
+
+  // Lánzalo apenas entra a la pantalla de grabar (no bloquea la UI):
+  setTimeout(prewarmMicAtLoad, 100);
+//hsta aqui codigo generado por mi
   function resetUI(){
     state='idle';
     recordBtn.setAttribute('aria-pressed','false');
