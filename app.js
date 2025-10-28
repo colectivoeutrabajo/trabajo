@@ -20,7 +20,7 @@ const showToast = (m)=>{ const t=$('#toast'); if(!t) return; t.textContent=m; t.
 const showSpinner = (on=true)=>{ const s=$('#spinner'); if(!s) return; s.classList.toggle('hidden',!on); };
 
 /***** EMOJIS *****/
-const EMOJIS=[": D",": )",": |",": (",":’(",": S"];
+const EMOJIS=[": D",": )",": |",": (",":’(",": S","O.O",":’)","; ¡",": *",": O",": ^"];
 const pickEmoji=(prev=null)=>{ let e=EMOJIS[Math.floor(Math.random()*EMOJIS.length)]; if(prev&&e===prev) e=EMOJIS[(EMOJIS.indexOf(e)+1)%EMOJIS.length]; return e; };
 
 /***** GEO IP *****/
