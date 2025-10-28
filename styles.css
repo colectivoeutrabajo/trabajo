@@ -134,9 +134,18 @@ body[data-page="record"] .counter{ margin-top:28px; }
   box-shadow: 0 4px 10px rgba(0,0,0,.15);
   font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, sans-serif;
 }
-.btn-primary{background:var(--blue); color:#fff}
-.btn-sec{background:var(--blue); color:#002b6f}
-.btn-ghost{background:#efefef; color:#333}
+
+.btn-primary,
+.btn-sec {
+  background: var(--blue);
+  color: #fff;
+}
+
+/* "Grabar de nuevo": gris más oscuro y letras blancas */
+.btn-ghost{
+  background: #595959; /* más oscuro que #efefef */
+  color: #fff;
+}
 
 .banner{
   background: var(--yellow);
