@@ -135,6 +135,7 @@ body[data-page="record"] .counter{ margin-top:28px; }
   font-family: "DIN Next LT Pro","DINNextLTPro","Archivo","Inter", Arial, sans-serif;
 }
 .btn-primary{background:var(--blue); color:#fff}
+.btn-sec{background:var(--blue); color:#002b6f}
 .btn-ghost{background:#efefef; color:#333}
 
 .banner{
