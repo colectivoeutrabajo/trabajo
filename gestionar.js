@@ -6,7 +6,7 @@ const BUCKET = 'audios';
 const PREFIX = 'recordings/'; // limitar deletes y construir rutas
 
 // Clave de acceso (se valida contra querystring ?key=...)
-const EXPECTED_KEY = 'CAMBIA_ESTA_CLAVE'; // <- cámbiala
+const EXPECTED_KEY = 'admin'; // <- cámbiala
 
 // Cliente supabase
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
