@@ -314,13 +314,14 @@ async function markAndDelete(rows){
   // 1) marcar en DB vía RPC (evita RLS en UPDATE)
   const { error: e1 } = await sb.rpc('mark_unapproved', { ids });
   if (e1) { toast('Error al marcar'); console.error(e1); return; }
-
-  // 2) borrar en storage (tu policy exige approved=false + recordings/%)
+  
+  // 2) borrar en storage (vía RPC que evita RLS)
   let delErr = null;
   if (files.length) {
-    const { error: e2 } = await sb.storage.from(BUCKET).remove(files);
+    const { error: e2 } = await sb.rpc('delete_storage_objects', { _paths: files });
     delErr = e2 || null;
   }
+
 
   if (delErr) {
     toast('Marcados, pero algunos archivos NO se borraron');
