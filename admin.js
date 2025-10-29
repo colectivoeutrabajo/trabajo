@@ -2,241 +2,278 @@
 const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
 
-const BUCKET = 'audios';
-const PREFIX = 'recordings';     // carpeta donde guardas los audios
-const PAGE_SIZE = 50;
+// admin.js (ESM)
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-// Si no configuras en el backend, usamos 1 GB (Free)
-const DEFAULT_QUOTA_BYTES = 1 * 1024 * 1024 * 1024;
+// ====== CONFIG UI ======
+const PAGE_SIZE = 50; // cámbialo a 500 temporalmente si quieres limpiar rápido
 
-// Supabase client (solo SELECT)
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+// ====== UI helpers ======
+const $ = sel => document.querySelector(sel);
+const $$ = sel => Array.from(document.querySelectorAll(sel));
+const toastEl = $('#toast');
+let TOAST_T;
 
-// Estado UI
-let PAGE = 1;
-let LAST_TOTAL = 0;
-let CURRENT_ROWS = [];
-let SELECTED = new Set();
-
-const $ = s => document.querySelector(s);
-const fmtBytes = n => {
-  if (n == null) return '—';
-  const units = ['B','KB','MB','GB','TB'];
-  let i = 0, v = Number(n);
-  while (v >= 1024 && i < units.length-1){ v/=1024; i++; }
-  return `${v.toFixed(v<10?2:1)} ${units[i]}`;
-};
-const toast = (m)=>{ const t=$('#toast'); t.textContent=m; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),2500); };
-
-function getAdminKey(){ return sessionStorage.getItem('ADMIN_KEY') || $('#adminKeyInput').value.trim(); }
-function saveAdminKey(){ const k=$('#adminKeyInput').value.trim(); if(k){ sessionStorage.setItem('ADMIN_KEY',k); toast('Admin key guardada'); }}
-
-// ------- Resumen de uso real (Storage) -------
-async function refreshUsage(){
-  try{
-    const res = await fetch(`/api/admin/cleanup?op=usage`, {
-      headers: { 'x-admin-key': getAdminKey() || '' }
-    });
-    if(!res.ok){ throw new Error('No autorizado o error de servidor'); }
-    const j = await res.json();
-    const used = j.usedBytes ?? 0;
-    const quota = j.quotaBytes ?? DEFAULT_QUOTA_BYTES;
-    $('#usedHuman').textContent = fmtBytes(used);
-    $('#quotaHuman').textContent = fmtBytes(quota);
-    const pct = Math.min(100, (used/quota)*100);
-    $('#usedBar').style.width = `${pct.toFixed(1)}%`;
-  }catch(e){
-    console.error(e);
-    $('#usedHuman').textContent = '—';
-    $('#quotaHuman').textContent = fmtBytes(DEFAULT_QUOTA_BYTES);
-    $('#usedBar').style.width = '0%';
-  }
+function toast(msg, ms=1800){
+  clearTimeout(TOAST_T);
+  toastEl.textContent = msg;
+  toastEl.classList.remove('hidden');
+  TOAST_T = setTimeout(()=>toastEl.classList.add('hidden'), ms);
 }
 
-// ------- Query builder -------
-function buildQuery(){
-  const q = $('#q').value.trim();
-  const approved = $('#approved').value;
-  const transcript = $('#transcript').value;
-  const mime = $('#mime').value;
-  const from = $('#fromDate').value;
-  const to = $('#toDate').value;
-  const minDur = parseInt($('#minDur').value || '0', 10);
-  const minKB  = parseInt($('#minKB').value || '0', 10);
-  const order = $('#orderBy').value; // e.g., created_at.desc
-
-  let query = sb.from('recordings')
-    .select('id, created_at, file_path, mime_type, size_bytes, duration_seconds, transcript, approved, location_city', { count: 'exact' });
-
-  if (approved !== 'all') query = query.eq('approved', approved === 'true');
-
-  if (transcript === 'null')      query = query.is('transcript', null);
-  else if (transcript === 'nonnull') query = query.not('transcript', 'is', null);
-
-  if (mime === 'mp4')  query = query.or('mime_type.ilike.%mp4%,file_path.ilike.%.m4a');
-  if (mime === 'webm') query = query.or('mime_type.ilike.%webm%,file_path.ilike.%.webm');
-
-  if (q) {
-    // buscar por path o transcript
-    query = query.or(`file_path.ilike.%${q}%,transcript.ilike.%${q}%`);
-  }
-
-  if (from) query = query.gte('created_at', new Date(from).toISOString());
-  if (to) {
-    const end = new Date(to); end.setDate(end.getDate()+1); // incluir el día
-    query = query.lt('created_at', end.toISOString());
-  }
-
-  if (minDur > 0) query = query.gte('duration_seconds', minDur);
-  if (minKB  > 0) query = query.gte('size_bytes', minKB * 1024);
-
-  // order
-  const [col, dir] = order.split('.');
-  query = query.order(col, { ascending: dir === 'asc' });
-
-  // paginación
-  const fromIdx = (PAGE-1) * PAGE_SIZE;
-  const toIdx   = fromIdx + PAGE_SIZE - 1;
-  query = query.range(fromIdx, toIdx);
-
-  return query;
-}
-
-function renderRows(rows){
-  const tbody = $('#rows');
-  tbody.innerHTML = '';
-  $('#empty').classList.toggle('hidden', rows.length > 0);
-
-  CURRENT_ROWS = rows;
-  const fmtDate = s => new Date(s).toLocaleString();
-
-  for(const r of rows){
-    const tr = document.createElement('tr');
-
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = SELECTED.has(r.id);
-    cb.addEventListener('change', ()=> {
-      if(cb.checked) SELECTED.add(r.id); else SELECTED.delete(r.id);
-    });
-    const tdSel = document.createElement('td'); tdSel.appendChild(cb);
-
-    const tdDate = document.createElement('td'); tdDate.textContent = fmtDate(r.created_at);
-    const tdDur  = document.createElement('td'); tdDur.textContent  = (r.duration_seconds ?? 0) + 's';
-    const tdSize = document.createElement('td'); tdSize.textContent = fmtBytes(r.size_bytes);
-    const tdMime = document.createElement('td'); tdMime.textContent = r.mime_type || '—';
-    const tdAppr = document.createElement('td'); tdAppr.innerHTML   = r.approved ? '<span class="badge-true">true</span>' : '<span class="badge-false">false</span>';
-    const tdTr   = document.createElement('td'); tdTr.textContent   = (r.transcript ? 'sí' : 'NULL');
-    const tdCity = document.createElement('td'); tdCity.textContent = r.location_city || '—';
-    const tdPath = document.createElement('td'); tdPath.innerHTML   = `<span class="mono">${r.file_path || '—'}</span>`;
-
-    tr.append(tdSel, tdDate, tdDur, tdSize, tdMime, tdAppr, tdTr, tdCity, tdPath);
-    tbody.appendChild(tr);
-  }
-  $('#pageInfo').textContent = `Página ${PAGE} · ${rows.length} filas (de ${LAST_TOTAL})`;
-}
-
-async function load(){
-  const { data, count, error } = await buildQuery();
-  if(error){ console.error(error); toast('Error al consultar'); return; }
-  LAST_TOTAL = count || 0;
-  renderRows(data || []);
-}
-
-// ------- Acciones -------
-function selectedRows(){
-  const map = new Map(CURRENT_ROWS.map(r => [r.id, r]));
-  const picked = [];
-  for(const id of SELECTED){
-    if(map.has(id)) picked.push(map.get(id));
-  }
-  return picked;
-}
+function setHint(msg){ const h=$('#hint'); if(!msg){h.classList.add('hidden');h.textContent='';} else {h.textContent=msg;h.classList.remove('hidden');} }
 
 function showResult(obj, ok=true){
-  const box = $('#resultBox');
-  box.className = `result ${ok?'ok':'err'}`;
-  box.innerHTML = `<pre>${JSON.stringify(obj, null, 2)}</pre>`;
+  const box = $('#resultBox'); box.className = `result ${ok?'ok':'err'}`;
+  if (typeof obj === 'string') { box.textContent = obj; }
+  else { box.textContent = JSON.stringify(obj, null, 2); }
   box.classList.remove('hidden');
 }
 
-async function action(endpointBody){
-  const key = getAdminKey();
-  if(!key){ toast('Ingresa Admin Key'); return null; }
-
-  const res = await fetch('/api/admin/cleanup', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-admin-key': key },
-    body: JSON.stringify(endpointBody)
-  });
-  if(!res.ok){
-    const err = await res.text().catch(()=>('Error'));
-    showResult({ error: err }, false);
-    return null;
-  }
-  const j = await res.json();
-  showResult(j, true);
-  return j;
+function humanBytes(n){
+  if (!Number.isFinite(n)) return '—';
+  const u=['B','KB','MB','GB','TB']; let i=0, v=Number(n);
+  while (v>=1024 && i<u.length-1){ v/=1024; i++; }
+  return `${v.toFixed(v<10?2:1)} ${u[i]}`;
 }
 
-// ---- Botones ----
-$('#applyFilters').addEventListener('click', ()=>{ PAGE=1; SELECTED.clear(); load(); });
-$('#resetFilters').addEventListener('click', ()=>{
-  $('#q').value=''; $('#approved').value='true'; $('#transcript').value='all'; $('#mime').value='all';
-  $('#fromDate').value=''; $('#toDate').value=''; $('#minDur').value=''; $('#minKB').value='';
-  $('#orderBy').value='created_at.desc'; PAGE=1; SELECTED.clear(); load();
-});
+// ====== STATE ======
+let adminKey = sessionStorage.getItem('ADMIN_KEY') || '';
+let supa; // cliente de sólo lectura para listar (usa anon si lo quieres)
+let page = 1;
+let rows = [];         // última página
+let checkedIds = new Set();
 
-$('#refresh').addEventListener('click', ()=>{ load(); refreshUsage(); });
-$('#selectPage').addEventListener('click', ()=>{
-  for(const r of CURRENT_ROWS){ SELECTED.add(r.id); }
-  load();
-});
-$('#clearSel').addEventListener('click', ()=>{ SELECTED.clear(); load(); });
+// ====== BACKEND CALL ======
+async function callCleanup(method, urlParams=null, body=null){
+  const url = new URL('/api/admin/cleanup', location.origin);
+  if (urlParams) for (const [k,v] of Object.entries(urlParams)) url.searchParams.set(k, v);
 
-$('#prev').addEventListener('click', ()=>{ if(PAGE>1){ PAGE--; load(); } });
-$('#next').addEventListener('click', ()=>{ if(PAGE*PAGE_SIZE < LAST_TOTAL){ PAGE++; load(); } });
+  const headers = { 'x-admin-key': adminKey };
+  if (body) headers['content-type'] = 'application/json';
 
-$('#dryRun').addEventListener('click', ()=>{
-  const picked = selectedRows();
-  const bytes = picked.reduce((a,r)=> a + (r.size_bytes||0), 0);
-  showResult({ selection: picked.length, wouldFree: bytes, human: fmtBytes(bytes) }, true);
-});
+  const res = await fetch(url.toString(), {
+    method, headers,
+    body: body ? JSON.stringify(body) : undefined
+  });
 
-$('#downloadLinks').addEventListener('click', async ()=>{
-  const picked = selectedRows();
-  if(picked.length===0) return toast('Nada seleccionado');
-  const file_paths = picked.map(r=> r.file_path).filter(Boolean);
-  const j = await action({ action: 'signed_urls', file_paths, expiresInSec: 600 });
-  if(!j) return;
-  // Mostrar lista simple de links
-  const links = (j.links||[]).map(x=> x.signedUrl || x.error || '').filter(Boolean);
-  showResult({ count: links.length, links }, true);
-});
+  // Ayuda visual según 401
+  if (res.status === 401){
+    const msg = await res.json().catch(()=>({error:'UNAUTHORIZED'}));
+    setHint('No autorizado: ingresa una Admin Key válida y pulsa “Guardar”.');
+    showResult(msg, false);
+    throw new Error('UNAUTHORIZED');
+  }
+  return res.json();
+}
 
-$('#archiveOnly').addEventListener('click', async ()=>{
-  const picked = selectedRows(); if(picked.length===0) return toast('Nada seleccionado');
-  if(!confirm(`Marcar approved=false en ${picked.length} filas (no borra archivos). ¿Continuar?`)) return;
-  const ids = picked.map(r=> r.id);
-  await action({ action: 'disapprove_only', ids });
-  await load(); await refreshUsage();
-});
+// ====== USO DE STORAGE ======
+async function refreshUsage(){
+  try{
+    const data = await callCleanup('GET', { op:'usage' });
+    const used = Number(data.usedBytes||0);
+    const quota = Number(data.quotaBytes||0);
+    $('#usageText').textContent = `${humanBytes(used)} de ${humanBytes(quota)} (${data.count} archivos)`;
+    const pct = quota ? Math.min(100, Math.round(used*100/quota)) : 0;
+    $('#usageBar').style.width = `${pct}%`;
+    setHint('');
+    return true;
+  }catch(e){
+    // si no autorizado, ya mostramos hint
+    return false;
+  }
+}
 
-$('#deleteAndDisapprove').addEventListener('click', async ()=>{
-  const picked = selectedRows(); if(picked.length===0) return toast('Nada seleccionado');
-  if(!confirm(`Borrar del Storage y poner approved=false en ${picked.length} filas. ¿Continuar?`)) return;
-  const ids = picked.map(r=> r.id);
-  const file_paths = picked.map(r=> r.file_path).filter(Boolean);
-  await action({ action: 'delete_storage_and_disapprove', ids, file_paths });
-  SELECTED.clear();
-  await load(); await refreshUsage();
-});
+// ====== LISTADO (con Supabase anon para lectura) ======
+function supaClient(){
+  // Usa variables ya inyectadas en index/escuchar (si las tienes globales).
+  // Si no, puedes dejar anonKey/url aquí (solo para lectura).
+  // Para no tocar tu setup, intento leer del window si existe:
+  const url = window.SUPABASE_URL || (window.env && window.env.SUPABASE_URL);
+  const anon = window.SUPABASE_ANON_KEY || (window.env && window.env.SUPABASE_ANON_KEY);
+  if (!url || !anon) return null;
+  return createClient(url, anon);
+}
 
-$('#saveAdminKey').addEventListener('click', saveAdminKey);
+async function load(){
+  if (!supa){
+    supa = supaClient();
+    if (!supa){
+      setHint('No se encontró SUPABASE_URL/ANON_KEY en window. Solo funcionará la parte de “Borrar/Descargar” con Admin Key.');
+      $('#grid').classList.add('readonly');
+    }
+  }
+  if (!supa){ // sin listado, pero no bloquea admin
+    $('#tbody').innerHTML = `<tr><td colspan="8" style="color:#666">Sin cliente Supabase: sólo administra con los botones de arriba.</td></tr>`;
+    return;
+  }
 
-// Init
-(async ()=>{
-  const saved = sessionStorage.getItem('ADMIN_KEY'); if(saved) $('#adminKeyInput').value = saved;
-  await refreshUsage();
+  const from = (page-1)*PAGE_SIZE;
+  const to = from + PAGE_SIZE - 1;
+
+  const { data, error, count } = await supa
+    .from('recordings')
+    .select('id,file_path,mime_type,duration_seconds,size_bytes,approved,created_at', { count:'exact' })
+    .order('created_at', { ascending:false })
+    .range(from, to);
+
+  if (error){
+    showResult({error:error.message}, false);
+    return;
+  }
+
+  rows = data || [];
+  renderTable();
+  $('#pageInfo').textContent = `Página ${page} · ${rows.length} filas`;
+}
+
+function renderTable(){
+  const tb = $('#tbody');
+  tb.innerHTML = rows.map(r=>{
+    const checked = checkedIds.has(r.id) ? 'checked' : '';
+    const size = humanBytes(r.size_bytes||0);
+    return `<tr>
+      <td><input type="checkbox" data-id="${r.id}" ${checked}></td>
+      <td class="mono">${r.id}</td>
+      <td class="mono">${r.file_path || '—'}</td>
+      <td>${r.mime_type || '—'}</td>
+      <td>${r.duration_seconds ?? '—'}</td>
+      <td>${size}</td>
+      <td>${r.approved ? 'true' : 'false'}</td>
+      <td>${new Date(r.created_at).toLocaleString()}</td>
+    </tr>`;
+  }).join('');
+
+  // hooks checks
+  $$('#tbody input[type=checkbox]').forEach(chk=>{
+    chk.addEventListener('change', e=>{
+      const id = e.target.getAttribute('data-id');
+      if (e.target.checked) checkedIds.add(id);
+      else checkedIds.delete(id);
+    });
+  });
+
+  // checkAll for page
+  const cap = $('#checkAllPage');
+  cap.checked = rows.every(r => checkedIds.has(r.id)) && rows.length>0;
+  cap.onchange = ()=> {
+    if (cap.checked) rows.forEach(r=>checkedIds.add(r.id));
+    else rows.forEach(r=>checkedIds.delete(r.id));
+    renderTable();
+  };
+}
+
+// ====== ACCIONES ======
+function pickCurrent(){
+  // devuelve los ids y file_paths seleccionados presentes en la página
+  const selected = rows.filter(r => checkedIds.has(r.id));
+  const ids = selected.map(r=>r.id);
+  const file_paths = selected.map(r=>r.file_path).filter(Boolean);
+  return { ids, file_paths, selected };
+}
+
+async function actDownloadLinks(){
+  const { file_paths } = pickCurrent();
+  if (!file_paths.length) { toast('Selecciona al menos 1 fila'); return; }
+  const res = await callCleanup('POST', null, {
+    action:'signed_urls',
+    file_paths,
+    expiresInSec: 600
+  });
+  // Mostrar lista amigable
+  const list = (res.links||[]).map((u,i)=>`#${i+1} ${u}`).join('\n');
+  showResult({count:res.links?.length||0, links:res.links});
+  // plus: descarga .txt
+  const blob = new Blob([list], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `links_${Date.now()}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Links generados');
+}
+
+async function actArchiveOnly(){
+  const { ids } = pickCurrent();
+  if (!ids.length) { toast('Selecciona al menos 1 fila'); return; }
+  const res = await callCleanup('POST', null, {
+    action:'disapprove_only',
+    ids
+  });
+  showResult(res, true);
+  toast('Marcados como approved=false');
+  // refresca listado
   await load();
-})();
+}
+
+async function actDeleteAndDisapprove(){
+  const { ids, file_paths } = pickCurrent();
+  if (!ids.length || !file_paths.length) { toast('Selecciona filas con file_path'); return; }
+  if (!confirm(`¿Borrar ${file_paths.length} del Storage y marcar ${ids.length} como approved=false?`)) return;
+
+  const res = await callCleanup('POST', null, {
+    action:'delete_storage_and_disapprove',
+    ids, file_paths
+  });
+  showResult(res, true);
+  toast(`Borrados del Storage: ${res.deleted || 0}`);
+  checkedIds.clear();
+  await Promise.all([refreshUsage(), load()]);
+}
+
+// ====== INIT ======
+function bind(){
+  $('#saveKeyBtn').addEventListener('click', ()=>{
+    const v = $('#adminKeyInput').value.trim();
+    if (!v) return toast('Ingresa una Admin Key');
+    adminKey = v;
+    sessionStorage.setItem('ADMIN_KEY', v);
+    toast('Admin Key guardada');
+    setHint('');
+  });
+
+  $('#refresh').addEventListener('click', async ()=>{
+    await refreshUsage();
+    await load();
+  });
+
+  $('#selectPage').addEventListener('click', ()=>{
+    rows.forEach(r=>checkedIds.add(r.id));
+    renderTable();
+  });
+
+  $('#clearSel').addEventListener('click', ()=>{
+    checkedIds.clear();
+    renderTable();
+  });
+
+  $('#downloadLinks').addEventListener('click', actDownloadLinks);
+  $('#archiveOnly').addEventListener('click', actArchiveOnly);
+  $('#deleteAndDisapprove').addEventListener('click', actDeleteAndDisapprove);
+
+  $('#prev').addEventListener('click', ()=>{
+    if (page>1){ page--; load(); }
+  });
+  $('#next').addEventListener('click', ()=>{
+    page++; load();
+  });
+}
+
+async function selfCheck(){
+  // 1) Admin Key: pide si no hay
+  if (!adminKey){
+    setHint('Ingresa una Admin Key y pulsa “Guardar”. Luego “Recargar”.');
+    $('#adminKeyInput').focus();
+  }
+  // 2) Probar backend (usage). Si 401, mostrará hint solo.
+  await refreshUsage();
+  // 3) Listado inicial (si hay anon)
+  await load();
+}
+
+window.addEventListener('DOMContentLoaded', ()=>{
+  // precarga valor si existe
+  if (adminKey) $('#adminKeyInput').value = adminKey;
+  bind();
+  selfCheck();
+});
