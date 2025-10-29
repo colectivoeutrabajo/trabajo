@@ -1,53 +1,20 @@
-// admin.js — versión robusta para que SIEMPRE mande x-admin-key
-// y muestre errores claros cuando falte o no coincida.
-//
-// No cambia la UI. Solo arregla el wiring de la Admin Key y las llamadas.
-//
-// Requisitos backend: /api/admin/cleanup con:
-//  - GET   ?op=usage
-//  - POST  { action: 'signed_urls'|'disapprove_only'|'delete_storage_and_disapprove', ... }
-// Debe validar header 'x-admin-key'.
+// admin.js — versión compatible con tu estructura previa
+// - No muestra el JSON UNAUTHORIZED al cargar; pide la Admin Key con un hint.
+// - Lee Supabase de window.SUPABASE_URL / window.SUPABASE_ANON_KEY
+//   o de window.env.* o de constantes globales SUPABASE_URL / SUPABASE_ANON_KEY
+// - Siempre manda x-admin-key si existe.
+// - UI y botones igual que tu admin original.
 
-// ========= util dom =========
-const $  = (s) => document.querySelector(s);
-const $$ = (s) => Array.from(document.querySelectorAll(s));
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-const toastEl = document.createElement('div');
-toastEl.id = 'toast';
-toastEl.style.position = 'fixed';
-toastEl.style.left = '50%';
-toastEl.style.bottom = '24px';
-toastEl.style.transform = 'translateX(-50%)';
-toastEl.style.background = 'rgba(20,20,20,.92)';
-toastEl.style.color = '#fff';
-toastEl.style.padding = '10px 14px';
-toastEl.style.borderRadius = '999px';
-toastEl.style.boxShadow = '0 8px 30px rgba(0,0,0,.2)';
-toastEl.style.zIndex = '9999';
-toastEl.style.display = 'none';
-document.addEventListener('DOMContentLoaded', ()=> document.body.appendChild(toastEl));
-let TOAST_T;
-function toast(msg, ms=1800){
-  clearTimeout(TOAST_T);
-  toastEl.textContent = msg;
-  toastEl.style.display = 'block';
-  TOAST_T = setTimeout(()=> toastEl.style.display='none', ms);
-}
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const PAGE_SIZE = 50;
 
-function showResult(obj, ok=true){
-  const box = $('#resultBox');
-  if (!box) return;
-  box.className = `result ${ok ? 'ok' : 'err'}`;
-  box.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
-  box.classList.remove('hidden');
-}
-
-function setHint(msg){
-  const h = $('#hint');
-  if (!h) return;
-  if (!msg) { h.classList.add('hidden'); h.textContent = ''; }
-  else { h.textContent = msg; h.classList.remove('hidden'); }
-}
+let page = 1;
+let rows = [];
+let checkedIds = new Set();
+let supa = null;
 
 function humanBytes(n){
   if (!Number.isFinite(n)) return '—';
@@ -56,39 +23,77 @@ function humanBytes(n){
   return `${v.toFixed(v<10?2:1)} ${u[i]}`;
 }
 
-// ========= estado =========
-const PAGE_SIZE = 50;          // puedes subir a 500 si vas a limpiar mucho
-let page = 1;
-let rows = [];
-let checkedIds = new Set();
+const toastEl = $('#toast');
+let TOAST_T;
+function toast(msg, ms=1800){
+  clearTimeout(TOAST_T);
+  if (!toastEl) return;
+  toastEl.textContent = msg;
+  toastEl.classList.remove('hidden');
+  TOAST_T = setTimeout(()=> toastEl.classList.add('hidden'), ms);
+}
 
-// Admin Key management
+function showResult(obj, ok=true){
+  const box = $('#resultBox');
+  if (!box) return;
+  box.className = `result ${ok?'ok':'err'}`;
+  box.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2);
+  box.classList.remove('hidden');
+}
+
+function setHint(msg){
+  const h = $('#hint');
+  if (!h) return;
+  if (!msg){ h.classList.add('hidden'); h.textContent=''; }
+  else { h.textContent = msg; h.classList.remove('hidden'); }
+}
+
+// ===== Admin Key =====
 function getAdminKey(){
-  // 1) input
-  const v = $('#adminKeyInput')?.value?.trim();
+  const input = $('#adminKeyInput');
+  const v = input?.value?.trim();
   if (v) return v;
-  // 2) sessionStorage
   const s = sessionStorage.getItem('ADMIN_KEY');
-  if (s) {
-    // refleja al input si está vacío
-    if ($('#adminKeyInput') && !$('#adminKeyInput').value) $('#adminKeyInput').value = s;
-    return s;
-  }
+  if (s){ if (input && !input.value) input.value = s; return s; }
   return '';
 }
-
 function saveAdminKey(v){
   sessionStorage.setItem('ADMIN_KEY', v);
-  if ($('#adminKeyInput')) $('#adminKeyInput').value = v;
+  const input = $('#adminKeyInput');
+  if (input) input.value = v;
 }
 
-// ========= llamadas backend =========
+// ===== Supabase client (anon lectura) =====
+function getSupabaseConfig(){
+  // Prioridad: window.* -> window.env.* -> constantes globales (compat)
+  const url =
+    window.SUPABASE_URL ||
+    (window.env && window.env.SUPABASE_URL) ||
+    (typeof SUPABASE_URL !== 'undefined' ? SUPABASE_URL : null);
+
+  const anon =
+    window.SUPABASE_ANON_KEY ||
+    (window.env && window.env.SUPABASE_ANON_KEY) ||
+    (typeof SUPABASE_ANON_KEY !== 'undefined' ? SUPABASE_ANON_KEY : null);
+
+  return { url, anon };
+}
+
+function ensureSupa(){
+  if (supa) return supa;
+  const { url, anon } = getSupabaseConfig();
+  if (!url || !anon) return null;
+  supa = createClient(url, anon);
+  return supa;
+}
+
+// ===== Backend call =====
 async function callCleanup(method, urlParams=null, body=null){
   const url = new URL('/api/admin/cleanup', location.origin);
   if (urlParams) for (const [k,v] of Object.entries(urlParams)) url.searchParams.set(k, v);
 
-  const adminKey = getAdminKey();
   const headers = {};
+  const adminKey = getAdminKey();
   if (adminKey) headers['x-admin-key'] = adminKey;
   if (body) headers['content-type'] = 'application/json';
 
@@ -97,25 +102,25 @@ async function callCleanup(method, urlParams=null, body=null){
     body: body ? JSON.stringify(body) : undefined
   });
 
-  let data;
-  try { data = await res.json(); } catch { data = { error: 'Bad JSON' }; }
+  let data = null;
+  try { data = await res.json(); } catch { data = { error:'bad-json' }; }
 
   if (res.status === 401){
-    // Mensaje claro y enfoque al campo
-    setHint('No autorizado: ingresa una Admin Key válida y pulsa “Guardar”.');
+    // No inundamos la UI con el JSON; solo hint claro
+    setHint('No autorizado: ingresa Admin Key y pulsa “Guardar”.');
     $('#adminKeyInput')?.focus();
-    showResult(data, false);
+    // NO showResult del error aquí para que no estorbe visualmente
     throw new Error('UNAUTHORIZED');
   }
   if (!res.ok){
-    showResult(data, false);
+    showResult(data || {error: `HTTP ${res.status}`}, false);
     throw new Error(`HTTP ${res.status}`);
   }
   setHint('');
   return data;
 }
 
-// ========= usage (barra) =========
+// ===== Usage bar =====
 async function refreshUsage(){
   try{
     const data = await callCleanup('GET', { op:'usage' });
@@ -126,27 +131,17 @@ async function refreshUsage(){
     $('#usageBar').style.width = `${pct}%`;
     return true;
   }catch(e){
+    // Si es 401, dejamos el hint puesto y no ensuciamos la pantalla
     return false;
   }
 }
 
-// ========= listado (con Supabase anon si lo tienes) =========
-let supa = null;
-async function ensureSupa(){
-  if (supa) return supa;
-  // Si tienes SUPABASE_URL/ANON_KEY expuestas en window (como en tus otras pantallas)
-  const url = window.SUPABASE_URL || (window.env && window.env.SUPABASE_URL);
-  const anon = window.SUPABASE_ANON_KEY || (window.env && window.env.SUPABASE_ANON_KEY);
-  if (!url || !anon) return null;
-  const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
-  supa = createClient(url, anon);
-  return supa;
-}
-
+// ===== Listado =====
 async function load(){
-  const client = await ensureSupa();
+  const client = ensureSupa();
   if (!client){
     $('#tbody').innerHTML = `<tr><td colspan="8" style="color:#666">Sin cliente Supabase (anon). Aún puedes usar Descargar/Borrar con Admin Key.</td></tr>`;
+    $('#pageInfo').textContent = '—';
     return;
   }
   const from = (page-1)*PAGE_SIZE;
@@ -159,7 +154,7 @@ async function load(){
     .range(from, to);
 
   if (error){
-    showResult({error:error.message}, false);
+    showResult({error: error.message}, false);
     return;
   }
   rows = data || [];
@@ -193,15 +188,14 @@ function renderTable(){
   });
 
   const cap = $('#checkAllPage');
-  cap.checked = rows.every(r => checkedIds.has(r.id)) && rows.length>0;
-  cap.onchange = ()=> {
+  cap.checked = rows.length>0 && rows.every(r=>checkedIds.has(r.id));
+  cap.onchange = ()=>{
     if (cap.checked) rows.forEach(r=>checkedIds.add(r.id));
     else rows.forEach(r=>checkedIds.delete(r.id));
     renderTable();
   };
 }
 
-// ========= helpers acciones =========
 function pickCurrent(){
   const selected = rows.filter(r => checkedIds.has(r.id));
   const ids = selected.map(r=>r.id);
@@ -209,7 +203,7 @@ function pickCurrent(){
   return { ids, file_paths, selected };
 }
 
-// ========= acciones =========
+// ===== Acciones =====
 async function actDownloadLinks(){
   const { file_paths } = pickCurrent();
   if (!file_paths.length) { toast('Selecciona al menos 1 fila'); return; }
@@ -219,7 +213,7 @@ async function actDownloadLinks(){
     expiresInSec: 600
   });
   showResult({count: res.links?.length||0, links: res.links}, true);
-  toast('Links generados (.txt descargado si tu UI lo hace)');
+  toast('Links generados');
 }
 
 async function actArchiveOnly(){
@@ -238,7 +232,6 @@ async function actDeleteAndDisapprove(){
   const { ids, file_paths } = pickCurrent();
   if (!ids.length || !file_paths.length) { toast('Selecciona filas con file_path'); return; }
   if (!confirm(`¿Borrar ${file_paths.length} del Storage y marcar ${ids.length} como approved=false?`)) return;
-
   const res = await callCleanup('POST', null, {
     action:'delete_storage_and_disapprove',
     ids, file_paths
@@ -249,26 +242,23 @@ async function actDeleteAndDisapprove(){
   await Promise.all([refreshUsage(), load()]);
 }
 
-// ========= bind =========
+// ===== Bind / Init =====
 function bind(){
   $('#saveKeyBtn')?.addEventListener('click', ()=>{
     const v = $('#adminKeyInput')?.value?.trim();
-    if (!v) { toast('Ingresa Admin Key'); $('#adminKeyInput')?.focus(); return; }
+    if (!v){ toast('Ingresa Admin Key'); $('#adminKeyInput')?.focus(); return; }
     saveAdminKey(v);
     toast('Admin Key guardada');
     setHint('');
   });
-
   $('#refresh')?.addEventListener('click', async ()=>{
     await refreshUsage();
     await load();
   });
-
   $('#selectPage')?.addEventListener('click', ()=>{
     rows.forEach(r=>checkedIds.add(r.id));
     renderTable();
   });
-
   $('#clearSel')?.addEventListener('click', ()=>{
     checkedIds.clear();
     renderTable();
@@ -286,17 +276,16 @@ function bind(){
   });
 }
 
-// ========= init =========
 window.addEventListener('DOMContentLoaded', async ()=>{
-  // Si la Admin Key ya estaba en sessionStorage, refléjala al input
+  // refleja admin key guardada si existe
   const k = sessionStorage.getItem('ADMIN_KEY');
   if (k && $('#adminKeyInput') && !$('#adminKeyInput').value) $('#adminKeyInput').value = k;
 
   bind();
 
-  // Primer intento: usage (si 401, mostrará hint y pedirá key)
+  // 1) Intento de usage (si 401, solo pone hint; ya no muestra JSON feo)
   await refreshUsage();
 
-  // Carga de tabla (si no tienes supabase anon en window, igual podrás usar los botones)
+  // 2) Lista (si no hay supabase anon en window, te lo dice y puedes usar los botones igual)
   await load();
 });
