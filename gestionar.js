@@ -4,6 +4,15 @@ const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
 const BUCKET = 'audios';
 const PREFIX = 'recordings/'; // limitar deletes y construir rutas
+const STORAGE_CAP_BYTES = 1024 * 1024 * 1024; // 1 GB por defecto (ajústalo a tu cuota real)
+function humanBytes(n){
+  if(n==null) return '—';
+  const u=['B','KB','MB','GB','TB']; let i=0, v=n;
+  while(v>=1024 && i<u.length-1){ v/=1024; i++; }
+  const dec = i>=2 ? 2 : 0;
+  return `${v.toFixed(dec)} ${u[i]}`;
+}
+
 
 // Clave de acceso (se valida contra querystring ?key=...)
 const EXPECTED_KEY = 'admin'; // <- cámbiala
@@ -330,6 +339,7 @@ async function markAndDelete(rows){
     toast('Marcados y borrados');
   }
   loadPage(state.page);
+  loadUsage();
 }
 
 // --- Acciones masivas ---
@@ -338,8 +348,46 @@ function rowsFromSelection(){
   return state.rows.filter(r=> ids.has(r.id));
 }
 
+
+async function loadUsage(){
+  const usageEl = document.querySelector('#usage .val');
+  if(!usageEl) return;
+  // 1) Intento via storage.objects (sum(metadata.size))
+  let used = null, count = 0;
+  try{
+    const { data, error } = await sb
+      .from('storage.objects')
+      .select('metadata')
+      .eq('bucket_id', BUCKET)
+      .like('name', `${PREFIX}%`);
+    if(!error && Array.isArray(data)){
+      used = data.reduce((a,o)=> a + (Number(o.metadata?.size)||0), 0);
+      count = data.length;
+    }
+  }catch(e){ /* ignore */ }
+  // 2) Fallback: listar por Storage API
+  if(used===null){
+    let all = [];
+    let limit = 1000, offset = 0, page = [];
+    do{
+      const { data, error } = await sb.storage.from(BUCKET).list(PREFIX, { limit, offset });
+      if(error) break;
+      page = data || [];
+      all = all.concat(page);
+      offset += limit;
+    }while(page.length === limit);
+    used = all.reduce((a,o)=> a + (Number(o.metadata?.size)||0), 0);
+    count = all.length;
+  }
+  const cap = STORAGE_CAP_BYTES;
+  const pct = cap ? Math.min(100, Math.round((used/cap)*100)) : null;
+  usageEl.textContent = cap ? `${humanBytes(used)} de ${humanBytes(cap)} (${pct}%) · ${count} archivo(s)`
+                            : `${humanBytes(used)} usados · ${count} archivo(s)`;
+}
+
 function wire(){
   $('#btnApply').onclick = ()=> loadPage(1);
+    loadUsage();
   $('#btnClear').onclick = ()=>{
     ['fText','fDateFrom','fDateTo','fMime','fDurMin','fDurMax','fSizeMin','fSizeMax','fCountry','fCity'].forEach(id=> $('#'+id).value='');
     $('#fApproved').value='all';
@@ -348,6 +396,7 @@ function wire(){
     $('#sortBy').value='created_at.desc';
     $('#pageSize').value='50';
     loadPage(1);
+    loadUsage();
   };
   $('#prevPage').onclick = ()=> loadPage(Math.max(1, state.page-1));
   $('#nextPage').onclick = ()=> loadPage(state.page+1);
@@ -366,6 +415,7 @@ window.addEventListener('DOMContentLoaded', ()=>{
   if(gate()){
     wire();
     loadPage(1);
+    loadUsage();
   }else{
     // Si pasa por el gate con clave mala, wire se arma al entrar
   }
