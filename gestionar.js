@@ -1,12 +1,12 @@
-// gestionar.js — pantalla independiente para listar, descargar ZIP y borrar (lógico+storage)
+// gestionar.js — pantalla independiente para listar, descargar ZIP y borrar (lógico+storage) vía RPC
 /* CONFIG (se reutilizan las mismas constantes que ya usas en app.js si están en window) */
-const SUPABASE_URL = 'https://kozwtpgopvxrvkbvsaeo.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imtvend0cGdvcHZ4cnZrYnZzYWVvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgwNDU0NDAsImV4cCI6MjA3MzYyMTQ0MH0.VhF49ygm9y5LN5Fkd1INGJB9aqJjbn8cd3LjaRiT5o8';
+const SUPABASE_URL = window.SUPABASE_URL || 'https://TU-PROYECTO.supabase.co';
+const SUPABASE_ANON_KEY = window.SUPABASE_ANON_KEY || 'TU-ANON-KEY';
 const BUCKET = 'audios';
 const PREFIX = 'recordings/'; // limitar deletes y construir rutas
 
 // Clave de acceso (se valida contra querystring ?key=...)
-const EXPECTED_KEY = 'admin'; // <- cámbiala
+const EXPECTED_KEY = 'CAMBIA_ESTA_CLAVE'; // <- cámbiala
 
 // Cliente supabase
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -298,25 +298,37 @@ async function zipSelected(){
 
 // --- Marcar (approved=false) y borrar del Storage ---
 async function markAndDelete(rows){
-     // 1) marcar en DB vía RPC (evita RLS en UPDATE)
-    const { error: e1 } = await sb.rpc('mark_unapproved', { ids });
-    if (e1) { toast('Error al marcar'); console.error(e1); return; }
-    
-    // 2) borrar en storage (tu policy exige approved=false + recordings/%)
-    let delErr = null;
-    if (files.length) {
-      const { error: e2 } = await sb.storage.from(BUCKET).remove(files);
-      delErr = e2 || null;
-    }
-    
-    if (delErr) {
-      toast('Marcados, pero algunos archivos NO se borraron');
-      console.warn('delete errors', delErr);
-    } else {
-      toast('Marcados y borrados');
-    }
-    loadPage(state.page);
+  if(rows.length===0){ toast('Nada seleccionado'); return; }
+  const msg = `Vas a MARCAR (approved=false) y BORRAR del storage ${rows.length} audio(s).\n`+
+              `Esta acción libera espacio y es irreversible.\n\n`+
+              `Confirma escribiendo: SI`;
+  const conf = prompt(msg);
+  if(!conf || conf.trim().toUpperCase()!=='SI'){ toast('Cancelado'); return; }
 
+  const ids = rows.map(r=> r.id);
+  const files = rows
+    .map(r=> r.file_path)
+    .filter(Boolean)
+    .map(p=> p.startsWith(PREFIX)?p:`${PREFIX}${p}`);
+
+  // 1) marcar en DB vía RPC (evita RLS en UPDATE)
+  const { error: e1 } = await sb.rpc('mark_unapproved', { ids });
+  if (e1) { toast('Error al marcar'); console.error(e1); return; }
+
+  // 2) borrar en storage (tu policy exige approved=false + recordings/%)
+  let delErr = null;
+  if (files.length) {
+    const { error: e2 } = await sb.storage.from(BUCKET).remove(files);
+    delErr = e2 || null;
+  }
+
+  if (delErr) {
+    toast('Marcados, pero algunos archivos NO se borraron');
+    console.warn('delete errors', delErr);
+  } else {
+    toast('Marcados y borrados');
+  }
+  loadPage(state.page);
 }
 
 // --- Acciones masivas ---
