@@ -301,9 +301,9 @@ async function markAndDelete(rows){
   if(rows.length===0){ toast('Nada seleccionado'); return; }
   const msg = `Vas a MARCAR (approved=false) y BORRAR del storage ${rows.length} audio(s).\n`+
               `Esta acción libera espacio y es irreversible.\n\n`+
-              `Confirma escribiendo: SI, QUIERO BORRAR`;
+              `Confirma escribiendo: Si`;
   const conf = prompt(msg);
-  if(conf!=='SI, QUIERO BORRAR'){ toast('Cancelado'); return; }
+  if(conf!=='Si'){ toast('Cancelado'); return; }
 
   const ids = rows.map(r=>r.id);
   const files = rows.map(r=>r.file_path).filter(Boolean).map(p=> p.startsWith(PREFIX)?p:`${PREFIX}${p}`);
