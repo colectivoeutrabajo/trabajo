@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Gestionar audios — Trabajo</title>
+  <link rel="stylesheet" href="./gestionar.css">
+  <!-- Supabase JS v2 (CDN) -->
+  <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- JSZip para crear ZIP en el cliente -->
+  <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <!-- FileSaver para guardar el ZIP -->
+  <script defer src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+  <script defer src="./gestionar.js"></script>
+</head>
+<body>
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div class="brand">
+        <h1>Gestionar audios</h1>
+        <small>Proyecto: <strong>Trabajo</strong></small>
+      </div>
+      <div class="actions">
+        <button id="btnExportCSV" class="btn btn-ghost">Exportar CSV</button>
+        <button id="btnZip" class="btn btn-sec">Descargar seleccionados (ZIP)</button>
+        <button id="btnMarkDelete" class="btn btn-danger">Marcar y borrar seleccionados</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="filters">
+        <h2>Filtros</h2>
+        <div class="field">
+          <label>Clave de acceso</label>
+          <input id="accessKey" type="password" placeholder="?key=... (autocompleta)" />
+        </div>
+        <div class="field">
+          <label>Texto en transcript</label>
+          <input id="fText" type="text" placeholder="contiene..." />
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Fecha desde</label>
+            <input id="fDateFrom" type="date">
+          </div>
+          <div class="field">
+            <label>Fecha hasta</label>
+            <input id="fDateTo" type="date">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Approved</label>
+            <select id="fApproved">
+              <option value="all">Todos</option>
+              <option value="true">Sólo true</option>
+              <option value="false">Sólo false</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>MIME</label>
+            <input id="fMime" type="text" placeholder="p.ej. audio/mp4" />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Duración desde (s)</label>
+            <input id="fDurMin" type="number" min="0" step="1">
+          </div>
+          <div class="field">
+            <label>Duración hasta (s)</label>
+            <input id="fDurMax" type="number" min="0" step="1">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Tamaño desde (KB)</label>
+            <input id="fSizeMin" type="number" min="0" step="1">
+          </div>
+          <div class="field">
+            <label>Tamaño hasta (KB)</label>
+            <input id="fSizeMax" type="number" min="0" step="1">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>País</label>
+            <input id="fCountry" type="text" placeholder="MX, US..." />
+          </div>
+          <div class="field">
+            <label>Ciudad</label>
+            <input id="fCity" type="text" placeholder="Monterrey..." />
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>Transcript</label>
+            <select id="fHasTranscript">
+              <option value="all">Todos</option>
+              <option value="with">Con transcript</option>
+              <option value="without">Sin transcript</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Estado de archivo</label>
+            <select id="fStorageState">
+              <option value="skip">No calcular</option>
+              <option value="present">Sólo presentes</option>
+              <option value="missing">Sólo ausentes</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="field">
+            <label>Orden</label>
+            <select id="sortBy">
+              <option value="created_at.desc">Fecha (reciente primero)</option>
+              <option value="created_at.asc">Fecha (antiguo primero)</option>
+              <option value="duration_seconds.desc">Duración (mayor)</option>
+              <option value="duration_seconds.asc">Duración (menor)</option>
+              <option value="size_bytes.desc">Tamaño (mayor)</option>
+              <option value="size_bytes.asc">Tamaño (menor)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Por página</label>
+            <select id="pageSize">
+              <option>25</option>
+              <option selected>50</option>
+              <option>100</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="filter-actions">
+          <button id="btnApply" class="btn btn-primary">Aplicar filtros</button>
+          <button id="btnClear" class="btn btn-ghost">Limpiar</button>
+        </div>
+
+        <div class="hint">
+          <p>Consejo: primero <b>Descarga ZIP</b>, luego usa <b>Marcar y borrar</b>.</p>
+        </div>
+      </aside>
+
+      <section class="results">
+        <div class="toolbar">
+          <div>
+            <label><input type="checkbox" id="selectAll"> Seleccionar todo</label>
+          </div>
+          <div class="pager">
+            <button id="prevPage" class="btn btn-ghost">&larr;</button>
+            <span id="pageInfo">—</span>
+            <button id="nextPage" class="btn btn-ghost">&rarr;</button>
+          </div>
+        </div>
+
+        <table class="table" id="tbl">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Fecha</th>
+              <th>Duración</th>
+              <th>Tamaño</th>
+              <th>Ubicación</th>
+              <th>Transcript</th>
+              <th>Archivo</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </section>
+    </main>
+  </div>
+
+  <div id="gate" class="gate">
+    <div class="card">
+      <h2>Acceso restringido</h2>
+      <p>Abre esta página con <code>?key=TU_CLAVE</code> en la URL.</p>
+      <p>También puedes escribir la clave aquí:</p>
+      <input id="keyInput" type="password" placeholder="clave" />
+      <button id="keyBtn" class="btn btn-primary">Entrar</button>
+      <p id="gateMsg" class="gate-msg"></p>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+</body>
+</html>
